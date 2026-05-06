@@ -1,0 +1,27 @@
+http:
+  routers:
+    fastapi:
+      rule: "Host(`localhost`)"
+      entryPoints:
+        - web
+      service: fastapi-failover
+
+  services:
+    fastapi-failover:
+      failover:
+        service: fastapi-main
+        fallback: fastapi-backup
+
+    fastapi-main:
+      loadBalancer:
+        healthCheck:
+          path: /health
+          interval: 2s
+          timeout: 1s
+        servers:
+          - url: "http://fastapi_8000:8000"
+
+    fastapi-backup:
+      loadBalancer:
+        servers:
+          - url: "http://fastapi_8800:8000"
