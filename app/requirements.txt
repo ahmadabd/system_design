@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+httpx
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-instrumentation-fastapi
+opentelemetry-instrumentation-httpx
+opentelemetry-instrumentation-sqlite3
+opentelemetry-exporter-otlp

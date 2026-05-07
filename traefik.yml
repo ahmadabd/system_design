@@ -10,3 +10,16 @@ providers:
   file:
     filename: /etc/traefik/dynamic.yml
     watch: true
+
+metrics:
+  prometheus:
+    addEntryPointsLabels: true
+    addRoutersLabels: true
+    addServicesLabels: true
+    entryPoint: traefik
+
+tracing:
+  otlp:
+    grpc:
+      endpoint: "jaeger:4317"
+      insecure: true

@@ -1,7 +1,7 @@
 http:
   routers:
     fastapi:
-      rule: "Host(`localhost`)"
+      rule: "Host(`localhost`) && !PathPrefix(`/metrics`)"
       entryPoints:
         - web
       service: fastapi-failover

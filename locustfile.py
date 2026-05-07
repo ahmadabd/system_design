@@ -10,3 +10,7 @@ class APIUser(HttpUser):
     @task(1)
     def check_health(self):
         self.client.get("/health")
+
+    @task(3)
+    def trace_demo(self):
+        self.client.get("/trace-demo")
