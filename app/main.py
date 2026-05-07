@@ -34,9 +34,19 @@ def init_db():
     conn.commit()
     conn.close()
 
-init_db()
+from contextlib import asynccontextmanager
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic
+    init_db()
+    yield
+    # Shutdown logic
+    print("Graceful shutdown: Flushing OpenTelemetry spans...")
+    processor.shutdown()
+    print("Shutdown complete.")
+
+app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
 def root():
