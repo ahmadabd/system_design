@@ -7,3 +7,5 @@ opentelemetry-instrumentation-fastapi
 opentelemetry-instrumentation-httpx
 opentelemetry-instrumentation-sqlite3
 opentelemetry-exporter-otlp
+prometheus-fastapi-instrumentator
+python-json-logger
