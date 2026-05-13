@@ -1,16 +1,47 @@
 version: "3.9"
 
 services:
-  traefik:
+  traefik-master:
     image: traefik:v3.7
-    ports:
-      - "80:80"
-      - "8080:8080"
     volumes:
       - ./traefik.yml:/etc/traefik/traefik.yml:ro
       - ./dynamic.yml:/etc/traefik/dynamic.yml:ro
     networks:
-      - web
+      web:
+        ipv4_address: 172.28.0.10
+
+  traefik-backup:
+    image: traefik:v3.7
+    volumes:
+      - ./traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./dynamic.yml:/etc/traefik/dynamic.yml:ro
+    networks:
+      web:
+        ipv4_address: 172.28.0.11
+
+  keepalived-master:
+    image: osixia/keepalived:latest
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - NET_BROADCAST
+    volumes:
+      - ./keepalived-master.conf:/etc/keepalived/keepalived.conf:ro
+    network_mode: "service:traefik-master"
+    depends_on:
+      - traefik-master
+
+  keepalived-backup:
+    image: osixia/keepalived:latest
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - NET_BROADCAST
+    volumes:
+      - ./keepalived-backup.conf:/etc/keepalived/keepalived.conf:ro
+    network_mode: "service:traefik-backup"
+    depends_on:
+      - traefik-backup
 
   fastapi_8000:
     build: ./app
@@ -19,7 +50,8 @@ services:
     expose:
       - "8000"
     networks:
-      - web
+      web:
+        ipv4_address: 172.28.0.20
 
   fastapi_8800:
     build: ./app
@@ -28,7 +60,8 @@ services:
     expose:
       - "8000"
     networks:
-      - web
+      web:
+        ipv4_address: 172.28.0.21
 
   prometheus:
     image: prom/prometheus:latest
@@ -37,7 +70,8 @@ services:
     ports:
       - "9090:9090"
     networks:
-      - web
+      web:
+        ipv4_address: 172.28.0.30
 
   grafana:
     image: grafana/grafana:latest
@@ -46,15 +80,22 @@ services:
     environment:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
     networks:
-      - web
+      web:
+        ipv4_address: 172.28.0.31
 
   jaeger:
     image: jaegertracing/all-in-one:latest
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
     ports:
       - "16686:16686" # UI
     networks:
-      - web
+      web:
+        ipv4_address: 172.28.0.32
 
   loki:
     image: grafana/loki:latest
@@ -62,7 +103,8 @@ services:
       - "3100:3100"
     command: -config.file=/etc/loki/local-config.yaml
     networks:
-      - web
+      web:
+        ipv4_address: 172.28.0.33
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest
@@ -74,21 +116,15 @@ services:
       - "4318:4318" # OTLP HTTP
       - "8889:8889" # Prometheus exporter
     networks:
-      - web
+      web:
+        ipv4_address: 172.28.0.34
     depends_on:
       - jaeger
       - loki
 
-  # locust:
-  #   image: locustio/locust
-  #   volumes:
-  #     - ./:/mnt/locust
-  #   command: -f /mnt/locust/locustfile.py --host http://traefik
-  #   ports:
-  #     - "8089:8089"
-  #   networks:
-  #     - web
-
 networks:
   web:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

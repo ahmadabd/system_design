@@ -5,6 +5,7 @@ import httpx
 import logging
 from contextlib import asynccontextmanager
 from pythonjsonlogger import jsonlogger
+import random
 
 from opentelemetry import trace, _logs
 from opentelemetry.sdk.trace import TracerProvider
@@ -21,7 +22,7 @@ from opentelemetry.sdk.resources import Resource
 from prometheus_fastapi_instrumentator import Instrumentator
 
 # --- OpenTelemetry & Logging Setup ---
-OTEL_COLLECTOR_ENDPOINT = "http://otel-collector:4317"
+OTEL_COLLECTOR_ENDPOINT = "otel-collector:4317"
 
 resource = Resource.create({
     "service.name": "fastapi-loadbalancer-demo",
@@ -106,28 +107,10 @@ async def trace_demo():
         logger.info("Starting trace-demo request")
         span.set_attribute("api.endpoint", "/trace-demo")
         
-        url = "https://www.google.com"
-        
-        # External Request
-        async with httpx.AsyncClient() as client:
-            logger.info(f"Fetching URL: {url}")
-            response = await client.get(url)
-            span.set_attribute("http.status_code", response.status_code)
-        
-        # SQLite Write
-        logger.info("Writing results to SQLite")
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO requests (url, status_code) VALUES (?, ?)", (url, response.status_code))
-        conn.commit()
-        conn.close()
-        
         logger.info("trace-demo request completed successfully")
         return {
             "message": "Request completed and logged",
-            "url": url,
-            "status_code": response.status_code,
-            "instance": os.getenv("PORT", "unknown")
+            "code": random.randint(1, 1000)
         }
 
 FastAPIInstrumentor.instrument_app(app)
