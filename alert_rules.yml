@@ -1,0 +1,49 @@
+groups:
+  - name: backend_alerts
+    rules:
+      - alert: HighCPULoad
+        expr: rate(process_cpu_seconds_total[1m]) > 0.8
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}"
+          description: "CPU usage for service {{ $labels.job }} on instance {{ $labels.instance }} is above 80% for more than 1 minute."
+
+      - alert: InstanceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Instance {{ $labels.instance }} down"
+          description: "Service {{ $labels.job }} on instance {{ $labels.instance }} has been down for more than 1 minute."
+
+      # --- Security Alerts ---
+
+      - alert: PotentialScanningActivity
+        expr: sum(rate(http_request_duration_seconds_count{status=~"404"}[5m])) by (instance) > 5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High 404 rate on {{ $labels.instance }}"
+          description: "Detected more than 5 404 errors per second. This may indicate a vulnerability scan."
+
+      - alert: UnauthorizedAccessSpike
+        expr: sum(rate(http_request_duration_seconds_count{status=~"401|403"}[5m])) by (instance) > 2
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Spike in Unauthorized Access on {{ $labels.instance }}"
+          description: "High rate of 401/403 errors detected, possible brute force attempt."
+
+      - alert: HighRequestRateAnomalous
+        expr: sum(rate(http_request_duration_seconds_count[5m])) by (instance) > 100
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Abnormal Traffic Volume on {{ $labels.instance }}"
+          description: "Traffic volume is over 100 req/s, possible DDoS or scraping."

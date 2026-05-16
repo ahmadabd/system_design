@@ -67,11 +67,15 @@ services:
     image: prom/prometheus:latest
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus_data:/prometheus
     ports:
       - "9090:9090"
     networks:
       web:
         ipv4_address: 172.28.0.30
+    depends_on:
+      - alertmanager
 
   grafana:
     image: grafana/grafana:latest
@@ -83,6 +87,7 @@ services:
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning
       - ./grafana/dashboards:/var/lib/grafana/dashboards
+      - grafana_data:/var/lib/grafana
     networks:
       web:
         ipv4_address: 172.28.0.31
@@ -101,10 +106,22 @@ services:
     image: grafana/loki:latest
     ports:
       - "3100:3100"
+    volumes:
+      - loki_data:/loki
     command: -config.file=/etc/loki/local-config.yaml
     networks:
       web:
         ipv4_address: 172.28.0.33
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "9093:9093"
+    networks:
+      web:
+        ipv4_address: 172.28.0.35
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest
@@ -128,3 +145,8 @@ networks:
     ipam:
       config:
         - subnet: 172.28.0.0/16
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  loki_data:
