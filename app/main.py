@@ -91,6 +91,17 @@ app = FastAPI(lifespan=lifespan)
 # --- Prometheus Metrics ---
 Instrumentator().instrument(app).expose(app)
 
+# @app.get("/")
+# def root():
+#     logger.info("Root endpoint called - simulating failure")
+#     from fastapi import HTTPException
+#     raise HTTPException(status_code=500, detail="Root is broken for testing")
+
+# @app.get("/health")
+# def health():
+#     from fastapi import HTTPException
+#     raise HTTPException(status_code=500, detail="Service is broken for testing")
+
 @app.get("/")
 def root():
     logger.info("Root endpoint called")
@@ -99,6 +110,12 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+@app.get("/slow")
+async def slow():
+    import asyncio
+    await asyncio.sleep(3)
+    return {"message": "Finally finished!"}
 
 @app.get("/trace-demo")
 async def trace_demo():

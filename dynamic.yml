@@ -4,7 +4,30 @@ http:
       rule: "Host(`localhost`) && !PathPrefix(`/metrics`)"
       entryPoints:
         - web
+      middlewares:
+        - "rate-limit"
+        - "circuit-breaker"
+        - "load-shedding"
       service: fastapi-failover
+
+  middlewares:
+    load-shedding:
+      maxConn:
+        amount: 5
+        extractorStrategy:
+          clientIP: true
+
+    rate-limit:
+      rateLimit:
+        average: 10
+        burst: 20
+        sourceCriterion:
+          ipStrategy:
+            depth: 0
+
+    circuit-breaker:
+      circuitBreaker:
+        expression: "ResponseCodeRatio(500, 600, 0, 600) > 0.50"
 
   services:
     fastapi-failover:

@@ -6,6 +6,8 @@ services:
     volumes:
       - ./traefik.yml:/etc/traefik/traefik.yml:ro
       - ./dynamic.yml:/etc/traefik/dynamic.yml:ro
+    ports:
+      - "80:80"
     networks:
       web:
         ipv4_address: 172.28.0.10
