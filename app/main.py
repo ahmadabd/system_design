@@ -141,6 +141,8 @@ def init_redis():
 # Instantiate a circuit breaker to protect simulated unreliable external calls
 # Failure threshold is 3 consecutive failures, recovery timeout is 10.0 seconds.
 cb = CircuitBreaker(name="FlakyServiceBreaker", failure_threshold=3, recovery_timeout=10.0)
+db_breaker = CircuitBreaker(name="PostgresBreaker", failure_threshold=3, recovery_timeout=10.0)
+redis_breaker = CircuitBreaker(name="RedisBreaker", failure_threshold=3, recovery_timeout=10.0)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -238,36 +240,52 @@ async def trace_demo():
 @app.get("/db-demo")
 def db_demo():
     logger.info("DB demo endpoint called")
+    
+    # If the PostgreSQL circuit breaker is OPEN, short-circuit
+    if db_breaker.opened:
+        logger.warning("PostgresBreaker is OPEN! Returning local fallback response.")
+        return {
+            "status": "db_breaker_open_fallback",
+            "message": "Database is currently down. Returning locally simulated fallback stats.",
+            "total_requests_recorded": 9999,
+            "instance_port": f"{os.getenv('PORT', 'unknown')} (FALLBACK)"
+        }
+        
     if not db_pool:
         from fastapi import HTTPException
         raise HTTPException(status_code=503, detail="Database connection pool not available")
     
     conn = None
     try:
-        conn = db_pool.getconn()
-        cursor = conn.cursor()
-        
-        # Insert a request record
-        cursor.execute(
-            "INSERT INTO system_requests (endpoint, instance_port, status_code) VALUES (%s, %s, %s)",
-            ("/db-demo", os.getenv("PORT", "unknown"), 200)
-        )
-        conn.commit()
-        
-        # Retrieve the count of records
-        cursor.execute("SELECT COUNT(*) FROM system_requests")
-        count = cursor.fetchone()[0]
-        cursor.close()
-        
-        return {
-            "message": "Successfully recorded request in PostgreSQL!",
-            "total_requests_recorded": count,
-            "instance_port": os.getenv("PORT", "unknown")
-        }
+        # Wrap database interactions inside the PostgresBreaker context manager
+        with db_breaker:
+            conn = db_pool.getconn()
+            cursor = conn.cursor()
+            
+            # Insert a request record
+            cursor.execute(
+                "INSERT INTO system_requests (endpoint, instance_port, status_code) VALUES (%s, %s, %s)",
+                ("/db-demo", os.getenv("PORT", "unknown"), 200)
+            )
+            conn.commit()
+            
+            # Retrieve the count of records
+            cursor.execute("SELECT COUNT(*) FROM system_requests")
+            count = cursor.fetchone()[0]
+            cursor.close()
+            
+            return {
+                "message": "Successfully recorded request in PostgreSQL!",
+                "total_requests_recorded": count,
+                "instance_port": os.getenv("PORT", "unknown")
+            }
     except Exception as e:
         logger.error(f"DB operation failed: {e}")
         if conn:
-            conn.rollback()
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         from fastapi import HTTPException
         raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
     finally:
@@ -278,36 +296,53 @@ def db_demo():
 @app.get("/cache-demo")
 def cache_demo(key: str = "demo_key"):
     logger.info(f"Cache demo endpoint called for key: {key}")
+    
+    # If the Redis circuit breaker is OPEN, bypass the cache and run simulated computation
+    if redis_breaker.opened:
+        logger.warning("RedisBreaker is OPEN! Bypassing cache directly to simulated fallback calculation.")
+        # Perform calculation without hitting Redis
+        computed_val = f"computed_at_{time.time()}_on_port_{os.getenv('PORT', 'unknown')} (BYPASS)"
+        return {
+            "status": "redis_breaker_open_fallback",
+            "message": "Redis cache is currently down. Bypassing cache to perform local calculation directly.",
+            "source": "simulated_expensive_computation_bypass",
+            "key": key,
+            "value": computed_val,
+            "instance_port": os.getenv("PORT", "unknown")
+        }
+        
     if not redis_client:
         from fastapi import HTTPException
         raise HTTPException(status_code=503, detail="Redis client not available")
         
     try:
-        # Check cache
-        cached_val = redis_client.get(key)
-        if cached_val:
-            logger.info(f"Cache HIT for key '{key}'")
+        # Wrap Redis interactions inside the RedisBreaker context manager
+        with redis_breaker:
+            # Check cache
+            cached_val = redis_client.get(key)
+            if cached_val:
+                logger.info(f"Cache HIT for key '{key}'")
+                return {
+                    "source": "cache",
+                    "key": key,
+                    "value": cached_val.decode("utf-8") if isinstance(cached_val, bytes) else cached_val,
+                    "instance_port": os.getenv("PORT", "unknown")
+                }
+                
+            logger.info(f"Cache MISS for key '{key}'. Performing simulated expensive computation...")
+            # Simulate an expensive operation
+            time.sleep(1.0)
+            computed_val = f"computed_at_{time.time()}_on_port_{os.getenv('PORT', 'unknown')}"
+            
+            # Cache the result with a 10 seconds TTL
+            redis_client.setex(key, 10, computed_val)
+            
             return {
-                "source": "cache",
+                "source": "simulated_expensive_computation",
                 "key": key,
-                "value": cached_val,
+                "value": computed_val,
                 "instance_port": os.getenv("PORT", "unknown")
             }
-            
-        logger.info(f"Cache MISS for key '{key}'. Performing simulated expensive computation...")
-        # Simulate an expensive operation (e.g. database read or third-party call)
-        time.sleep(1.0)
-        computed_val = f"computed_at_{time.time()}_on_port_{os.getenv('PORT', 'unknown')}"
-        
-        # Cache the result with a 10 seconds TTL
-        redis_client.setex(key, 10, computed_val)
-        
-        return {
-            "source": "simulated_expensive_computation",
-            "key": key,
-            "value": computed_val,
-            "instance_port": os.getenv("PORT", "unknown")
-        }
     except Exception as e:
         logger.error(f"Redis operation failed: {e}")
         from fastapi import HTTPException
@@ -350,18 +385,26 @@ async def circuit_breaker_demo(fail: bool = False):
 # --- Circuit Breaker Status Endpoint ---
 @app.get("/circuit-breaker-status")
 def get_cb_status():
-    seconds_since_open = 0.0
-    if cb.opened:
-        seconds_since_open = time.monotonic() - cb._opened
+    breakers = [cb, db_breaker, redis_breaker]
+    status_list = []
+    
+    for b in breakers:
+        seconds_since_open = 0.0
+        if b.opened:
+            seconds_since_open = time.monotonic() - b._opened
+            
+        status_list.append({
+            "name": b.name,
+            "state": b.state.upper(),
+            "failure_count": b._failure_count,
+            "failure_threshold": b._failure_threshold,
+            "recovery_timeout": b._recovery_timeout,
+            "seconds_since_state_change": seconds_since_open
+        })
         
     return {
-        "name": cb.name,
-        "state": cb.state.upper(),
-        "failure_count": cb._failure_count,
-        "failure_threshold": cb._failure_threshold,
-        "recovery_timeout": cb._recovery_timeout,
-        "seconds_since_state_change": seconds_since_open,
-        "instance_port": os.getenv("PORT", "unknown")
+        "instance_port": os.getenv("PORT", "unknown"),
+        "breakers": status_list
     }
 
 FastAPIInstrumentor.instrument_app(app)

@@ -50,18 +50,22 @@ Instead of relying on Traefik to globally block the site, we transitioned to the
 3. **Manual Short-Circuiting**: Solves Starlette/FastAPI's routing exception-swallowing behavior by combining the context manager with a fast-fail `cb.opened` check to immediately return graceful local and Redis fallbacks.
 4. **Dynamic Load-Balanced Half-Open Recovery**: Automatically recovery-probes downstream services when in `HALF_OPEN` state, closing the circuit back to `CLOSED` upon success.
 
+### D. Data Tier Protection (PostgreSQL & Redis Circuit Breakers)
+To prevent cascading system failures, we added two independent dedicated circuit breakers:
+1. **`PostgresBreaker`**: Protects the PostgreSQL database. If database writes or queries fail 3 consecutive times, it trips to `OPEN`, immediately fast-failing subsequent calls to `/db-demo` and returning a graceful local simulated fallback to spare the database while it recovers.
+2. **`RedisBreaker`**: Protects the Redis caching tier. If Redis connections fail 3 consecutive times, it trips to `OPEN`, immediately bypassing the cache to perform local calculations directly without slamming the down Redis server with expensive connection attempts and timeouts.
+
 ---
 
 ## 3. Implementation Details
 
-### Standard Circuit Breaker Middleware
-The breaker uses the PyPI `circuitbreaker` package configured with a failure threshold of 3 and recovery timeout of 10 seconds. In the `OPEN` state, it immediately short-circuits to avoid downstream network requests.
-
+### Multi-Circuit Breaker Setup
+All three circuit breakers are declared and imported from the PyPI `circuitbreaker` package:
 ```python
 # [main.py]
-# cb = CircuitBreaker(name="FlakyServiceBreaker", failure_threshold=3, recovery_timeout=10.0)
-# Intercepted globally in FastAPI via:
-# class CircuitBreakerMiddleware(BaseHTTPMiddleware)
+cb = CircuitBreaker(name="FlakyServiceBreaker", failure_threshold=3, recovery_timeout=10.0)
+db_breaker = CircuitBreaker(name="PostgresBreaker", failure_threshold=3, recovery_timeout=10.0)
+redis_breaker = CircuitBreaker(name="RedisBreaker", failure_threshold=3, recovery_timeout=10.0)
 ```
 
 ### Demonstration Endpoints
@@ -69,11 +73,11 @@ The following endpoints showcase system designs and resilience in [main.py](file
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/db-demo` | `GET` | Inserts request metrics into PostgreSQL 17 Alpine and returns the aggregated count. |
-| `/cache-demo` | `GET` | Standard caching pattern using Redis 7 Alpine. Miss: 1s; Hit: < 3ms. |
+| `/db-demo` | `GET` | PostgreSQL demo endpoint wrapped inside `PostgresBreaker`. Fast-fails when open. |
+| `/cache-demo` | `GET` | Redis cache demo endpoint wrapped inside `RedisBreaker`. Bypasses cache when open. |
 | `/flaky-service` | `GET` | Simulates an unreliable external service (70% fail rate). |
 | `/circuit-breaker-demo` | `GET` | Invokes `/flaky-service` wrapped in our standard library `CircuitBreaker` middleware. |
-| `/circuit-breaker-status` | `GET` | Exposes the real-time internal state of the standard circuit breaker. |
+| `/circuit-breaker-status` | `GET` | Exposes the real-time internal state of all three circuit breakers. |
 
 ---
 
