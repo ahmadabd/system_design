@@ -156,5 +156,17 @@ $ wrk -t20 -c1000 -d30s http://172.28.0.100/trace-demo
 
 ---
 
+## 6. Standalone System Design Algorithms (For Learning)
+
+To explore core resilience and traffic-shaping algorithms in pure, standalone Python (completely decoupled from the main FastAPI server), navigate to the `algorithms/` folder:
+
+| File | Pattern | Core Mechanism | How to Run |
+|---|---|---|---|
+| [circuit_breaker.py](file:///home/ahmad/Desktop/test/system_design/algorithms/circuit_breaker.py) | **Circuit Breaker** | Fully custom State Machine (`CLOSED` -> `OPEN` -> `HALF-OPEN`) simulating external service degradation and recovery. | `python3 algorithms/circuit_breaker.py` |
+| [token_bucket.py](file:///home/ahmad/Desktop/test/system_design/algorithms/token_bucket.py) | **Token Bucket Rate Limiter** | Efficient **lazy-refill strategy** allowing bursty traffic up to bucket capacity while capping average request throughput. | `python3 algorithms/token_bucket.py` |
+| [leaky_bucket.py](file:///home/ahmad/Desktop/test/system_design/algorithms/leaky_bucket.py) | **Leaky Bucket Rate Limiter** | Efficient **lazy-leak strategy** smoothing out sudden bursts completely, outputting steady uniform flow. | `python3 algorithms/leaky_bucket.py` |
+
+---
+
 > [!NOTE]
 > All traces are automatically populated with OpenTelemetry `trace_id` and `span_id` contexts, allowing developers to view the full cascading call graph in **Jaeger** (`http://localhost:16686`) and trace structured logs in **Loki / Grafana** (`http://localhost:3000`).
