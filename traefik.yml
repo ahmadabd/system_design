@@ -5,6 +5,8 @@ api:
 entryPoints:
   web:
     address: ":80"
+  traefik:
+    address: ":8080"
 
 providers:
   file:

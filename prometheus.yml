@@ -13,7 +13,7 @@ alerting:
 scrape_configs:
   - job_name: "traefik"
     static_configs:
-      - targets: ["traefik:8080"]
+      - targets: ["traefik-master:8080", "traefik-backup:8080"]
 
   - job_name: "fastapi"
     static_configs:
