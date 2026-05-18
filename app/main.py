@@ -28,6 +28,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
+from prometheus_client import Gauge, Counter
 from circuitbreaker import CircuitBreaker, CircuitBreakerError as CircuitBreakerOpenException
 
 # --- OpenTelemetry & Logging Setup ---
@@ -78,6 +79,67 @@ logger = logging.getLogger(__name__)
 HTTPXClientInstrumentor().instrument()
 Psycopg2Instrumentor().instrument()
 RedisInstrumentor().instrument()
+
+# --- Prometheus Metrics for Circuit Breakers ---
+PROM_CB_STATE = Gauge(
+    "circuit_breaker_state",
+    "Current state of the circuit breaker (0=CLOSED, 1=HALF-OPEN, 2=OPEN)",
+    ["name"]
+)
+PROM_CB_FAILURES = Counter(
+    "circuit_breaker_failures_total",
+    "Total failures registered by the circuit breaker",
+    ["name"]
+)
+
+# --- Observable Circuit Breaker Subclass ---
+class ObservableCircuitBreaker(CircuitBreaker):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.last_seen_state = "CLOSED"
+        # Set initial Prometheus state
+        PROM_CB_STATE.labels(name=self.name).set(0) # 0 = CLOSED
+        
+    def reset(self):
+        super().reset()
+        self._check_state_change_to("CLOSED")
+        
+    def __exit__(self, exc_type, exc_value, traceback):
+        if exc_type and self.is_failure(exc_type, exc_value):
+            PROM_CB_FAILURES.labels(name=self.name).inc()
+        res = super().__exit__(exc_type, exc_value, traceback)
+        self._check_state_change_to(self.state.upper())
+        return res
+        
+    @property
+    def state(self):
+        current = super().state
+        self._check_state_change_to(current.upper())
+        return current
+        
+    def _check_state_change_to(self, current: str):
+        if hasattr(self, 'last_seen_state') and current != self.last_seen_state:
+            logger.warning(
+                f"[CircuitBreaker-{self.name}] State transition detected: {self.last_seen_state} -> {current}"
+            )
+            
+            # OTel Span Event
+            span = trace.get_current_span()
+            if span.is_recording():
+                span.add_event(
+                    "circuit_breaker_state_change",
+                    {
+                        "cb.name": self.name,
+                        "cb.old_state": self.last_seen_state,
+                        "cb.new_state": current
+                    }
+                )
+                
+            self.last_seen_state = current
+            
+            # Update Prometheus Gauge
+            state_val = 0 if current == "CLOSED" else (1 if current == "HALF_OPEN" else 2)
+            PROM_CB_STATE.labels(name=self.name).set(state_val)
 
 # --- Database Setup ---
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@postgres:5432/system_design")
@@ -140,9 +202,9 @@ def init_redis():
 # --- Circuit Breaker Setup ---
 # Instantiate a circuit breaker to protect simulated unreliable external calls
 # Failure threshold is 3 consecutive failures, recovery timeout is 10.0 seconds.
-cb = CircuitBreaker(name="FlakyServiceBreaker", failure_threshold=3, recovery_timeout=10.0)
-db_breaker = CircuitBreaker(name="PostgresBreaker", failure_threshold=3, recovery_timeout=10.0)
-redis_breaker = CircuitBreaker(name="RedisBreaker", failure_threshold=3, recovery_timeout=10.0)
+cb = ObservableCircuitBreaker(name="FlakyServiceBreaker", failure_threshold=3, recovery_timeout=10.0)
+db_breaker = ObservableCircuitBreaker(name="PostgresBreaker", failure_threshold=3, recovery_timeout=10.0)
+redis_breaker = ObservableCircuitBreaker(name="RedisBreaker", failure_threshold=3, recovery_timeout=10.0)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
