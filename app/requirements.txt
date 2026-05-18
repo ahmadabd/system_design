@@ -5,7 +5,12 @@ opentelemetry-api
 opentelemetry-sdk
 opentelemetry-instrumentation-fastapi
 opentelemetry-instrumentation-httpx
-opentelemetry-instrumentation-sqlite3
+opentelemetry-instrumentation-psycopg2
+opentelemetry-instrumentation-redis
 opentelemetry-exporter-otlp
 prometheus-fastapi-instrumentator
+prometheus-client
 python-json-logger
+circuitbreaker
+psycopg2-binary
+redis
