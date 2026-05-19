@@ -50,10 +50,17 @@ Instead of relying on Traefik to globally block the site, we transitioned to the
 3. **Manual Short-Circuiting**: Solves Starlette/FastAPI's routing exception-swallowing behavior by combining the context manager with a fast-fail `cb.opened` check to immediately return graceful local and Redis fallbacks.
 4. **Dynamic Load-Balanced Half-Open Recovery**: Automatically recovery-probes downstream services when in `HALF_OPEN` state, closing the circuit back to `CLOSED` upon success.
 
-### D. Data Tier Protection (PostgreSQL & Redis Circuit Breakers)
-To prevent cascading system failures, we added two independent dedicated circuit breakers:
-1. **`PostgresBreaker`**: Protects the PostgreSQL database. If database writes or queries fail 3 consecutive times, it trips to `OPEN`, immediately fast-failing subsequent calls to `/db-demo` and returning a graceful local simulated fallback to spare the database while it recovers.
-2. **`RedisBreaker`**: Protects the Redis caching tier. If Redis connections fail 3 consecutive times, it trips to `OPEN`, immediately bypassing the cache to perform local calculations directly without slamming the down Redis server with expensive connection attempts and timeouts.
+### D. Data Tier Protection (PostgreSQL & Redis Circuit Breaker Decorators)
+To prevent cascading system failures, we integrated dedicated circuit breakers using clean, production-grade **Function Decorators**:
+1. **`PostgresBreaker` (`@db_breaker`)**: Protects the PostgreSQL database layer. If database connections or queries fail 3 consecutive times, it trips to `OPEN`, immediately raising a `CircuitBreakerOpenException`. The API endpoint catches this exception to return a dynamic, locally simulated fallback response, sparing the database while it recovers.
+2. **`RedisBreaker` (`@redis_breaker`)**: Protects the Redis caching layer. If Redis read/write calls fail 3 consecutive times, it trips to `OPEN`, immediately raising an exception which instructs the endpoint to bypass the caching layer entirely and calculate results locally, ensuring the cache outage does not take down the main service.
+
+### E. Graceful Shutdown & Traffic Cooldown (Zero-Downtime Redeployments)
+To achieve zero-downtime container termination and rolling updates, we built an elegant Unix signal-interceptor mechanism:
+1. **Signal Interception**: Upon receiving `SIGTERM` (e.g. from Docker Compose or Kubernetes) or `SIGINT`, our application intercepts the signal before it reaches Uvicorn.
+2. **Health Probe Draining**: We transition the global health state flag `is_shutting_down` to `True`. This causes the `/health` readiness check to instantly fail with a `503 Service Unavailable` status, signaling the load balancer (Traefik) to stop routing *new* requests to this instance.
+3. **Cooperative Cooldown Period**: We trigger a non-blocking `asyncio.sleep()` for a customizable `SHUTDOWN_COOLDOWN` window (default `10` seconds). During this delay, the event loop remains fully responsive, permitting **in-flight requests** to finish executing normally.
+4. **Clean Resource Teardown**: After the cooldown, we restore Uvicorn's original signal handlers and re-propagate the signal. Once Uvicorn initiates its standard exit, we safely invoke the `lifespan` cleanup block to close all database pool connections, Redis clients, and flush OpenTelemetry trace and log processors.
 
 ---
 

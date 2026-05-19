@@ -10,6 +10,8 @@ import asyncio
 import psycopg2
 from psycopg2 import pool
 import redis
+import signal
+import sys
 
 from opentelemetry import trace, _logs
 from opentelemetry.sdk.trace import TracerProvider
@@ -206,10 +208,72 @@ cb = ObservableCircuitBreaker(name="FlakyServiceBreaker", failure_threshold=3, r
 db_breaker = ObservableCircuitBreaker(name="PostgresBreaker", failure_threshold=3, recovery_timeout=10.0)
 redis_breaker = ObservableCircuitBreaker(name="RedisBreaker", failure_threshold=3, recovery_timeout=10.0)
 
+# --- Graceful Shutdown Setup ---
+is_shutting_down = False
+original_sigterm_handler = None
+original_sigint_handler = None
+SHUTDOWN_COOLDOWN = int(os.getenv("SHUTDOWN_COOLDOWN", "10"))
+
+def custom_sigterm_handler(signum, frame):
+    global is_shutting_down
+    if not is_shutting_down:
+        is_shutting_down = True
+        logger.warning("Received SIGTERM signal. Starting graceful shutdown sequence...")
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(run_cooldown_and_exit(signum))
+        except RuntimeError:
+            logger.error("No running event loop found during SIGTERM.")
+            sys.exit(0)
+
+def custom_sigint_handler(signum, frame):
+    global is_shutting_down
+    if not is_shutting_down:
+        is_shutting_down = True
+        logger.warning("Received SIGINT signal. Starting graceful shutdown sequence...")
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(run_cooldown_and_exit(signum))
+        except RuntimeError:
+            logger.error("No running event loop found during SIGINT.")
+            sys.exit(0)
+
+async def run_cooldown_and_exit(signum):
+    logger.warning(f"Graceful Shutdown: Starting {SHUTDOWN_COOLDOWN}s cooldown phase. Health checks will now fail.")
+    
+    # Wait for the cooldown to allow the load balancer (Traefik) to detect failure and update routing
+    await asyncio.sleep(SHUTDOWN_COOLDOWN)
+    
+    logger.warning("Graceful Shutdown: Cooldown finished. Restoring original handlers and propagating signal to Uvicorn...")
+    
+    # Restore original handlers so standard Uvicorn shutdown runs
+    if signum == signal.SIGTERM:
+        signal.signal(signal.SIGTERM, original_sigterm_handler)
+        if original_sigterm_handler and callable(original_sigterm_handler):
+            original_sigterm_handler(signum, None)
+        else:
+            sys.exit(0)
+    elif signum == signal.SIGINT:
+        signal.signal(signal.SIGINT, original_sigint_handler)
+        if original_sigint_handler and callable(original_sigint_handler):
+            original_sigint_handler(signum, None)
+        else:
+            raise KeyboardInterrupt()
+
+def setup_graceful_shutdown():
+    global original_sigterm_handler, original_sigint_handler
+    original_sigterm_handler = signal.signal(signal.SIGTERM, custom_sigterm_handler)
+    original_sigint_handler = signal.signal(signal.SIGINT, custom_sigint_handler)
+    logger.info("Graceful shutdown signal handlers registered successfully.")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     init_redis()
+    
+    # Register graceful shutdown handlers to intercept signals after Uvicorn starts
+    setup_graceful_shutdown()
+    
     logger.info("Application started")
     yield
     logger.info("Application shutting down")
@@ -278,6 +342,11 @@ def root():
 
 @app.get("/health")
 def health():
+    if is_shutting_down:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "shutting_down", "message": "Service is shutting down, draining active traffic"}
+        )
     return {"status": "ok"}
 
 @app.get("/slow")
@@ -299,70 +368,99 @@ async def trace_demo():
         }
 
 # --- New PostgreSQL Demo Endpoint ---
+@db_breaker
+def execute_db_query():
+    conn = db_pool.getconn()
+    try:
+        cursor = conn.cursor()
+        # Insert a request record
+        cursor.execute(
+            "INSERT INTO system_requests (endpoint, instance_port, status_code) VALUES (%s, %s, %s)",
+            ("/db-demo", os.getenv("PORT", "unknown"), 200)
+        )
+        conn.commit()
+        
+        # Retrieve the count of records
+        cursor.execute("SELECT COUNT(*) FROM system_requests")
+        count = cursor.fetchone()[0]
+        cursor.close()
+        return count
+    except Exception as e:
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        raise e
+    finally:
+        if conn and db_pool:
+            db_pool.putconn(conn)
+
 @app.get("/db-demo")
 def db_demo():
     logger.info("DB demo endpoint called")
     
-    # If the PostgreSQL circuit breaker is OPEN, short-circuit
-    if db_breaker.opened:
-        logger.warning("PostgresBreaker is OPEN! Returning local fallback response.")
+    if not db_pool:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=503, detail="Database connection pool not available")
+    
+    try:
+        count = execute_db_query()
+        return {
+            "message": "Successfully recorded request in PostgreSQL!",
+            "total_requests_recorded": count,
+            "instance_port": os.getenv("PORT", "unknown")
+        }
+    except CircuitBreakerOpenException as cbe:
+        logger.warning(f"PostgresBreaker is OPEN! Returning local fallback response. Error: {cbe}")
         return {
             "status": "db_breaker_open_fallback",
             "message": "Database is currently down. Returning locally simulated fallback stats.",
             "total_requests_recorded": 9999,
             "instance_port": f"{os.getenv('PORT', 'unknown')} (FALLBACK)"
         }
-        
-    if not db_pool:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=503, detail="Database connection pool not available")
-    
-    conn = None
-    try:
-        # Wrap database interactions inside the PostgresBreaker context manager
-        with db_breaker:
-            conn = db_pool.getconn()
-            cursor = conn.cursor()
-            
-            # Insert a request record
-            cursor.execute(
-                "INSERT INTO system_requests (endpoint, instance_port, status_code) VALUES (%s, %s, %s)",
-                ("/db-demo", os.getenv("PORT", "unknown"), 200)
-            )
-            conn.commit()
-            
-            # Retrieve the count of records
-            cursor.execute("SELECT COUNT(*) FROM system_requests")
-            count = cursor.fetchone()[0]
-            cursor.close()
-            
-            return {
-                "message": "Successfully recorded request in PostgreSQL!",
-                "total_requests_recorded": count,
-                "instance_port": os.getenv("PORT", "unknown")
-            }
     except Exception as e:
         logger.error(f"DB operation failed: {e}")
-        if conn:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
         from fastapi import HTTPException
         raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
-    finally:
-        if conn and db_pool:
-            db_pool.putconn(conn)
+
 
 # --- New Redis Demo Endpoint ---
+@redis_breaker
+def get_or_set_cache(key: str):
+    # Check cache
+    cached_val = redis_client.get(key)
+    if cached_val:
+        logger.info(f"Cache HIT for key '{key}'")
+        return cached_val, "cache"
+        
+    logger.info(f"Cache MISS for key '{key}'. Performing simulated expensive computation...")
+    # Simulate an expensive operation
+    time.sleep(1.0)
+    computed_val = f"computed_at_{time.time()}_on_port_{os.getenv('PORT', 'unknown')}"
+    
+    # Cache the result with a 10 seconds TTL
+    redis_client.setex(key, 10, computed_val)
+    return computed_val, "simulated_expensive_computation"
+
 @app.get("/cache-demo")
 def cache_demo(key: str = "demo_key"):
     logger.info(f"Cache demo endpoint called for key: {key}")
     
-    # If the Redis circuit breaker is OPEN, bypass the cache and run simulated computation
-    if redis_breaker.opened:
-        logger.warning("RedisBreaker is OPEN! Bypassing cache directly to simulated fallback calculation.")
-        # Perform calculation without hitting Redis
+    if not redis_client:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=503, detail="Redis client not available")
+        
+    try:
+        val, source = get_or_set_cache(key)
+        return {
+            "source": source,
+            "key": key,
+            "value": val.decode("utf-8") if isinstance(val, bytes) else val,
+            "instance_port": os.getenv("PORT", "unknown")
+        }
+    except CircuitBreakerOpenException as cbe:
+        logger.warning(f"RedisBreaker is OPEN! Bypassing cache directly to simulated fallback calculation. Error: {cbe}")
         computed_val = f"computed_at_{time.time()}_on_port_{os.getenv('PORT', 'unknown')} (BYPASS)"
         return {
             "status": "redis_breaker_open_fallback",
@@ -372,43 +470,11 @@ def cache_demo(key: str = "demo_key"):
             "value": computed_val,
             "instance_port": os.getenv("PORT", "unknown")
         }
-        
-    if not redis_client:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=503, detail="Redis client not available")
-        
-    try:
-        # Wrap Redis interactions inside the RedisBreaker context manager
-        with redis_breaker:
-            # Check cache
-            cached_val = redis_client.get(key)
-            if cached_val:
-                logger.info(f"Cache HIT for key '{key}'")
-                return {
-                    "source": "cache",
-                    "key": key,
-                    "value": cached_val.decode("utf-8") if isinstance(cached_val, bytes) else cached_val,
-                    "instance_port": os.getenv("PORT", "unknown")
-                }
-                
-            logger.info(f"Cache MISS for key '{key}'. Performing simulated expensive computation...")
-            # Simulate an expensive operation
-            time.sleep(1.0)
-            computed_val = f"computed_at_{time.time()}_on_port_{os.getenv('PORT', 'unknown')}"
-            
-            # Cache the result with a 10 seconds TTL
-            redis_client.setex(key, 10, computed_val)
-            
-            return {
-                "source": "simulated_expensive_computation",
-                "key": key,
-                "value": computed_val,
-                "instance_port": os.getenv("PORT", "unknown")
-            }
     except Exception as e:
         logger.error(f"Redis operation failed: {e}")
         from fastapi import HTTPException
         raise HTTPException(status_code=500, detail=f"Redis operation failed: {str(e)}")
+
 
 # --- Flaky Service (Simulating external microservice) ---
 @app.get("/flaky-service")

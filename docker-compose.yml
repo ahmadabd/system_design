@@ -46,8 +46,10 @@ services:
 
   fastapi_8000:
     build: ./app
+    stop_grace_period: 15s
     environment:
       - PORT=8000
+      - SHUTDOWN_COOLDOWN=10
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
     expose:
@@ -61,8 +63,10 @@ services:
 
   fastapi_8800:
     build: ./app
+    stop_grace_period: 15s
     environment:
       - PORT=8800
+      - SHUTDOWN_COOLDOWN=10
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
     expose:
