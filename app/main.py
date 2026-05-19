@@ -284,53 +284,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-class CircuitBreakerMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        if request.url.path == "/circuit-breaker-demo":
-            try:
-                # If the circuit breaker is OPEN, short-circuit and raise the open exception
-                if cb.opened:
-                    raise CircuitBreakerOpenException(cb)
-
-                # Use the context manager of the standard circuitbreaker library.
-                # Awaiting inside the 'with cb' block ensures async exceptions are caught.
-                with cb:
-                    response = await call_next(request)
-                    if response.status_code >= 500:
-                        raise Exception("Service returned unhealthy status code")
-                return response
-            except CircuitBreakerOpenException as cbe:
-                logger.warning("Circuit breaker is OPEN via Middleware! Returning cached fallback value.")
-                fallback_val = "FALLBACK_VALUE_LOCAL (Service Unhealthy via Middleware)"
-                if redis_client:
-                    try:
-                        cached = redis_client.get("last_flaky_success")
-                        if cached:
-                            fallback_val = f"FALLBACK_VALUE_FROM_REDIS ({cached}) (via Middleware)"
-                    except Exception as re:
-                        logger.error(f"Redis fallback read failed in Middleware: {re}")
-                        
-                return JSONResponse(
-                    status_code=200,
-                    content={
-                        "status": "circuit_breaker_open_fallback",
-                        "circuit_breaker_state": cb.state.upper(),
-                        "message": str(cbe),
-                        "fallback_data": fallback_val
-                    }
-                )
-            except Exception as e:
-                logger.error(f"Request failed in Middleware: {str(e)}. Failure count: {cb._failure_count}")
-                return JSONResponse(
-                    status_code=502,
-                    content={
-                        "detail": f"External call failed (Breaker State: {cb.state.upper()}). Error: {str(e)}"
-                    }
-                )
-        else:
-            return await call_next(request)
-
-app.add_middleware(CircuitBreakerMiddleware)
+# (Middleware removed - transitioned to clean function decorators)
 
 # --- Prometheus Metrics ---
 Instrumentator().instrument(app).expose(app)
@@ -496,19 +450,54 @@ def flaky_service(fail: bool = False):
     return {"status": "success", "message": "Flaky service call succeeded!"}
 
 # --- Circuit Breaker Demo Endpoint ---
-@app.get("/circuit-breaker-demo")
-async def circuit_breaker_demo(fail: bool = False):
-    logger.info("Circuit breaker demo called")
+@cb
+async def call_flaky_service(fail: bool):
     async with httpx.AsyncClient() as client:
+        # Note: calling our simulated internal flaky service
         url = f"http://127.0.0.1:8000/flaky-service?fail={str(fail).lower()}"
         response = await client.get(url, timeout=2.0)
         if response.status_code >= 500:
             raise Exception(f"Service returned unhealthy status code: {response.status_code}")
+        return response.json()
+
+@app.get("/circuit-breaker-demo")
+async def circuit_breaker_demo(fail: bool = False):
+    logger.info("Circuit breaker demo called")
+    try:
+        data = await call_flaky_service(fail)
         return {
             "status": "success",
             "circuit_breaker_state": cb.state.upper(),
-            "data": response.json()
+            "data": data
         }
+    except CircuitBreakerOpenException as cbe:
+        logger.warning(f"Circuit breaker is OPEN! Returning cached fallback value. Error: {cbe}")
+        fallback_val = "FALLBACK_VALUE_LOCAL (Service Unhealthy)"
+        if redis_client:
+            try:
+                cached = redis_client.get("last_flaky_success")
+                if cached:
+                    fallback_val = f"FALLBACK_VALUE_FROM_REDIS ({cached})"
+            except Exception as re:
+                logger.error(f"Redis fallback read failed: {re}")
+                
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "circuit_breaker_open_fallback",
+                "circuit_breaker_state": cb.state.upper(),
+                "message": str(cbe),
+                "fallback_data": fallback_val
+            }
+        )
+    except Exception as e:
+        logger.error(f"Request failed: {str(e)}. Failure count: {cb._failure_count}")
+        return JSONResponse(
+            status_code=502,
+            content={
+                "detail": f"External call failed (Breaker State: {cb.state.upper()}). Error: {str(e)}"
+            }
+        )
 
 # --- Circuit Breaker Status Endpoint ---
 @app.get("/circuit-breaker-status")

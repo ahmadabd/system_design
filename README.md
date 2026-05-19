@@ -43,12 +43,11 @@ graph TD
 - **Driver**: Integrated `redis-py` with auto-ping verification on startup.
 - **Instrumentor**: Integrated `RedisInstrumentor` to automatically export cache get/set traces to Jaeger.
 
-### C. Standard Library Code-Level Circuit Breaker Middleware
-Instead of relying on Traefik to globally block the site, we transitioned to the industry-standard `circuitbreaker` Python library integrated as a high-performance **ASGI Middleware** inside [main.py](file:///home/ahmad/Desktop/test/system_design/app/main.py) (while preserving the custom resilience telemetry engine in [circuit_breaker.py](file:///home/ahmad/Desktop/test/system_design/app/circuit_breaker.py) for architectural reference):
-1. **Global ASGI Middleware**: Intercepts requests destined for resilient endpoints and executes them within the circuit breaker context.
-2. **Context-Manager Strategy**: Uses the standard `with cb:` context manager pattern. Because Starlette's `call_next` returns a coroutine object rather than executing it synchronously, awaiting inside the `with` block ensures async exceptions are caught perfectly.
-3. **Manual Short-Circuiting**: Solves Starlette/FastAPI's routing exception-swallowing behavior by combining the context manager with a fast-fail `cb.opened` check to immediately return graceful local and Redis fallbacks.
-4. **Dynamic Load-Balanced Half-Open Recovery**: Automatically recovery-probes downstream services when in `HALF_OPEN` state, closing the circuit back to `CLOSED` upon success.
+### C. Standard Library Code-Level Circuit Breaker Decorators
+Instead of relying on Traefik to globally block the site, we transitioned to the industry-standard `circuitbreaker` Python library integrated using a high-performance **Function Decorator** inside [main.py](file:///home/ahmad/Desktop/test/system_design/app/main.py) (while preserving the custom resilience telemetry engine in [circuit_breaker.py](file:///home/ahmad/Desktop/test/system_design/app/circuit_breaker.py) for architectural reference):
+1. **Asynchronous Function Decoration**: The HTTP request helper `call_flaky_service()` is decorated with `@cb`. The `circuitbreaker` library natively wraps `async` operations and handles async exceptions cleanly.
+2. **Decoupled Fallback Handling**: If the third-party service trips the circuit breaker to `OPEN`, the decorator throws a `CircuitBreakerOpenException` instantly. The HTTP route catches the exception to serve cached fallback data from Redis, keeping your client responses fast and reliable.
+3. **Dynamic Load-Balanced Half-Open Recovery**: Automatically recovery-probes downstream services when in `HALF_OPEN` state, closing the circuit back to `CLOSED` upon success.
 
 ### D. Data Tier Protection (PostgreSQL & Redis Circuit Breaker Decorators)
 To prevent cascading system failures, we integrated dedicated circuit breakers using clean, production-grade **Function Decorators**:
