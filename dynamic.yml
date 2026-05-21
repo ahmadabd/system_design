@@ -1,50 +1,90 @@
 http:
   routers:
-    fastapi:
-      rule: "Host(`localhost`) && !PathPrefix(`/metrics`)"
+    user-router:
+      rule: "PathPrefix(`/users`)"
       entryPoints:
         - web
       middlewares:
         - "rate-limit"
         - "load-shedding"
-      service: fastapi-failover
+        - "strip-users"
+      service: user-service
+
+    product-router:
+      rule: "PathPrefix(`/products`)"
+      entryPoints:
+        - web
+      middlewares:
+        - "rate-limit"
+        - "load-shedding"
+        - "strip-products"
+      service: product-service
+
+    order-router:
+      rule: "PathPrefix(`/orders`)"
+      entryPoints:
+        - web
+      middlewares:
+        - "rate-limit"
+        - "load-shedding"
+        - "strip-orders"
+      service: order-service
 
   middlewares:
     load-shedding:
       inFlightReq:
-        amount: 5
+        amount: 50
         sourceCriterion:
           ipStrategy:
             depth: 0
 
     rate-limit:
       rateLimit:
-        average: 10
-        burst: 20
+        average: 30
+        burst: 50
         sourceCriterion:
           ipStrategy:
             depth: 0
 
-    circuit-breaker:
-      circuitBreaker:
-        expression: "ResponseCodeRatio(500, 600, 0, 600) > 0.50"
+    strip-users:
+      stripPrefix:
+        prefixes:
+          - "/users"
+
+    strip-products:
+      stripPrefix:
+        prefixes:
+          - "/products"
+
+    strip-orders:
+      stripPrefix:
+        prefixes:
+          - "/orders"
 
   services:
-    fastapi-failover:
-      failover:
-        service: fastapi-main
-        fallback: fastapi-backup
-
-    fastapi-main:
+    user-service:
       loadBalancer:
         healthCheck:
           path: /health
           interval: 2s
           timeout: 1s
         servers:
-          - url: "http://fastapi_8000:8000"
+          - url: "http://user-service:8001"
 
-    fastapi-backup:
+    product-service:
       loadBalancer:
+        healthCheck:
+          path: /health
+          interval: 2s
+          timeout: 1s
         servers:
-          - url: "http://fastapi_8800:8000"
+          - url: "http://product-service:8002"
+
+    order-service:
+      loadBalancer:
+        healthCheck:
+          path: /health
+          interval: 2s
+          timeout: 1s
+        servers:
+          - url: "http://order-service:8003"

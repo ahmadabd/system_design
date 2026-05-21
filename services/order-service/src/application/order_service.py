@@ -1,0 +1,82 @@
+import logging
+from src.domain.order import Order
+from src.domain.repository import OrderRepository
+from src.application.commands import CreateOrderCommand, ConfirmOrderCommand, CancelOrderCommand
+from src.application.dtos import OrderDTO
+from shared.contracts.events import OrderCreatedEvent
+
+logger = logging.getLogger("OrderApplicationService")
+
+class OrderApplicationService:
+    def __init__(self, order_repo: OrderRepository, event_publisher):
+        self.order_repo = order_repo
+        self.event_publisher = event_publisher
+
+    async def create_order(self, command: CreateOrderCommand) -> OrderDTO:
+        """Place a pending order and dispatch OrderCreated integration event"""
+        logger.info(f"Creating order for User: {command.user_id}, Product: {command.product_id}")
+        
+        # Instantiate aggregate root
+        order = Order.create(
+            user_id=command.user_id,
+            product_id=command.product_id,
+            quantity=command.quantity,
+            total_price=command.total_price
+        )
+
+        # Persist aggregate
+        saved_order = await self.order_repo.save(order)
+        logger.info(f"Order successfully placed with ID: {saved_order.id}")
+
+        # Publish integration events
+        for event in order.domain_events:
+            if event["event_type"] == "OrderCreated":
+                integration_event = OrderCreatedEvent(
+                    order_id=saved_order.id,
+                    user_id=event["user_id"],
+                    product_id=event["product_id"],
+                    quantity=event["quantity"],
+                    total_price=event["total_price"]
+                )
+                await self.event_publisher.publish_order_created(integration_event)
+
+        # Clear aggregate event loop queue
+        order.clear_events()
+
+        return OrderDTO.model_validate(saved_order)
+
+    async def confirm_order(self, command: ConfirmOrderCommand) -> None:
+        """Confirm the order after inventory reservation success"""
+        logger.info(f"Confirming order: {command.order_id}")
+        order = await self.order_repo.find_by_id(command.order_id)
+        if not order:
+            logger.error(f"Order ID {command.order_id} not found during confirmation.")
+            return
+
+        order.confirm()
+        await self.order_repo.save(order)
+        logger.info(f"Order {command.order_id} successfully confirmed in database!")
+
+    async def cancel_order(self, command: CancelOrderCommand) -> None:
+        """Cancel the order due to inventory allocation failures"""
+        logger.info(f"Cancelling order {command.order_id}. Reason: {command.reason}")
+        order = await self.order_repo.find_by_id(command.order_id)
+        if not order:
+            logger.error(f"Order ID {command.order_id} not found during cancellation.")
+            return
+
+        order.cancel(command.reason)
+        await self.order_repo.save(order)
+        logger.info(f"Order {command.order_id} successfully cancelled in database.")
+
+    async def get_order_by_id(self, order_id: int) -> OrderDTO | None:
+        """Fetch details of a single order"""
+        order = await self.order_repo.find_by_id(order_id)
+        if not order:
+            return None
+        return OrderDTO.model_validate(order)
+
+    async def get_all_orders(self) -> list[OrderDTO]:
+        """Fetch all orders recorded in the database"""
+        orders = await self.order_repo.find_all()
+        return [OrderDTO.model_validate(o) for o in orders]

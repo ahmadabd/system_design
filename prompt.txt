@@ -1,0 +1,675 @@
+Phase 1 — Basic APIs
+
+Step 1 — Create Monorepo Structure
+-----------------
+I want to learn building an event-driven microservices e-commerce platform.
+
+Create a production-style monorepo structure with:
+
+- services/
+    - user-service
+    - product-service
+    - order-service
+- infrastructure/
+    - postgres
+    - kafka
+- docker-compose.yml
+- shared/
+    - contracts
+    - common libraries
+
+Tech stack:
+- Python FastAPI for order-service
+- Python FastAPI for user-service and product-service
+- PostgreSQL per service
+- Docker Compose
+
+Please:
+- explain the folder structure
+- create initial Docker Compose
+- define environment variables
+- explain networking between services
+- follow clean architecture principles
+- Separate observibility and main services docker-compose files
+
+Architecture concepts to follow:
+- bounded contexts
+- database per service
+- loose coupling
+- service autonomy
+
+Explain:
+- why each service owns its database
+- how this reduces coupling
+- future event-driven expansion strategy
+-----------------
+
+
+Step 2 — User Service
+-----------------
+Implement a production-style FastAPI user-service.
+
+Requirements:
+- Clean architecture
+- SQLAlchemy async
+- PostgreSQL
+- Dockerized
+- Alembic migrations
+- Repository pattern
+- JWT authentication
+- Structured logging
+- Health check endpoint
+
+Features:
+- register user
+- login
+- get profile
+
+User model:
+- id
+- email
+- hashed_password
+- created_at
+
+Generate:
+- folder structure
+- models
+- schemas
+- repositories
+- services
+- routes
+- Dockerfile
+- docker-compose integration
+
+Apply concepts:
+- transactional consistency inside service boundary
+- autonomous service ownership
+- clean API contracts
+
+Explain:
+- why synchronous REST is acceptable initially
+- what later becomes event-driven
+-----------------
+
+
+Step 3 — Product Service
+-----------------
+Implement a production-style FastAPI product-service.
+
+Requirements:
+- Clean architecture
+- PostgreSQL
+- async SQLAlchemy
+- Dockerized
+- Alembic migrations
+
+Features:
+- create product
+- update price
+- list products
+
+Product model:
+- id
+- name
+- category
+- price
+- stock
+- created_at
+
+Generate:
+- REST APIs
+- validations
+- repository layer
+- service layer
+- migrations
+- docker setup
+
+Apply:
+- source-of-truth ownership
+- event-friendly data modeling
+
+Explain:
+- why product data should not be duplicated initially
+- future event publication strategy
+-----------------
+
+
+Step 4 — Order Service in Python FastAPI
+-----------------
+Implement a production-grade Python FastAPI order-service using Rocket.
+
+Requirements:
+- Rocket framework
+- PostgreSQL
+- sqlx
+- Dockerized
+- clean architecture
+- repository pattern
+- async
+- health endpoint
+
+Features:
+- create order
+- get order
+- order status
+
+Order model:
+- id
+- user_id
+- status
+- total_price
+- created_at
+
+Order item model:
+- product_id
+- quantity
+- price
+
+Generate:
+- project structure
+- Cargo.toml
+- database migrations
+- Dockerfile
+- API routes
+- services
+- repositories
+- DTOs
+
+Implement event-driven messaging patterns:
+- publish/subscribe
+- event notification
+- asynchronous communication
+- topic routing
+
+Explain:
+- event broker responsibilities
+- topic exchange design
+- routing key strategy
+- event naming conventions
+-----------------
+
+
+Phase 2 — Event-Driven Architecture
+
+Step 5 — Add kafka
+-----------------
+Add kafka to my microservices architecture.
+
+Current services:
+- user-service
+- product-service
+- order-service
+
+Requirements:
+- Docker Compose setup
+- kafka management UI
+- durable exchanges
+- durable queues
+- topic exchange strategy
+- explain routing keys
+
+Design:
+- order.events
+- product.events
+- user.events
+
+Please:
+- explain exchange/queue architecture
+- provide Docker Compose updates
+- provide example publisher and consumer structure
+- explain best practices for event naming
+
+Apply event modeling patterns:
+- immutable events
+- domain events
+- integration events
+- event envelope metadata
+
+Event metadata:
+- event_id
+- correlation_id
+- causation_id
+- event_version
+- occurred_at
+
+Explain:
+- difference between domain and integration events
+- event evolution/versioning strategy
+-----------------
+
+
+Step 6 — Publish OrderCreated Event
+-----------------
+Modify the Python FastAPI order-service to publish OrderCreated events to kafka.
+
+Requirements:
+- publish after successful DB transaction
+- JSON event schema
+- durable publishing
+- retry handling
+- correlation_id support
+- structured logging
+
+Event payload:
+- order_id
+- user_id
+- total_price
+- created_at
+- items
+
+Use:
+- lapin crate
+- tokio async runtime
+
+Please:
+- implement publisher abstraction
+- explain event versioning
+- explain failure handling
+
+Apply messaging reliability patterns:
+- idempotent consumer
+- competing consumers
+- at-least-once delivery
+- dead-letter queues
+
+Explain:
+- duplicate event handling
+- consumer acknowledgment strategy
+- poison message handling
+- scaling consumers horizontally
+-----------------
+
+
+Step 7 — Inventory Service Consumer
+-----------------
+Create an inventory-service in Python FastAPI.
+
+Requirements:
+- consume OrderCreated events from kafka
+- reserve inventory
+- update PostgreSQL
+- publish:
+    - InventoryReserved
+    - InventoryRejected
+
+Features:
+- idempotent consumers
+- retry mechanism
+- dead letter queue support
+- structured logging
+
+Inventory model:
+- product_id
+- available_quantity
+- reserved_quantity
+
+Please:
+- implement kafka consumer
+- explain consumer acknowledgment strategy
+- explain duplicate message handling
+
+Apply distributed workflow patterns:
+- event choreography
+- long-running transactions
+- event-carried state transfer
+
+Explain:
+- eventual consistency
+- asynchronous workflow coordination
+- distributed transaction limitations
+-----------------
+
+
+Phase 3 — Async Workflows
+Step 8 — Payment Workflow
+-----------------
+Create a payment-service in Python FastAPI.
+
+Requirements:
+- consume InventoryReserved events
+- simulate payment processing
+- publish:
+    - PaymentSucceeded
+    - PaymentFailed
+
+Features:
+- retryable payment logic
+- idempotency
+- timeout simulation
+- saga-friendly design
+
+Payment model:
+- payment_id
+- order_id
+- status
+- amount
+
+Please:
+- explain event choreography
+- implement reliable consumer patterns
+- explain at-least-once delivery handling
+
+Apply reactive event-driven patterns:
+- fan-out messaging
+- independent subscribers
+- asynchronous notifications
+
+Explain:
+- why notification services should be decoupled
+- subscriber isolation benefits
+- scaling independent consumers
+-----------------
+
+
+Step 9 — Notification Service
+-----------------
+Create a notification-service using FastAPI.
+
+Requirements:
+- consume events from kafka
+- send simulated emails
+- store notification history
+
+Consumes:
+- UserRegistered
+- OrderCompleted
+- PaymentFailed
+
+Features:
+- async consumers
+- retry logic
+- dead-letter queues
+- structured logging
+
+Please:
+- implement event handlers
+- explain event fan-out patterns
+- explain notification scalability concerns
+
+Apply reliability patterns:
+- retry queues
+- dead-letter queues
+- exponential backoff
+- poison message isolation
+
+Explain:
+- transient vs permanent failures
+- operational recovery workflows
+- message replay strategy
+-----------------
+
+
+Phase 4 — Reliability
+Step 10 — Dead Letter Queues
+-----------------
+Improve kafka reliability in my microservices system.
+
+Requirements:
+- dead-letter queues
+- retry queues
+- exponential backoff
+- poison message handling
+
+Please:
+- explain DLQ architecture
+- update Docker Compose
+- implement retry topology
+- explain operational monitoring
+
+Apply safe-consumer patterns:
+- idempotent consumers
+- deduplication storage
+- replay-safe processing
+
+Explain:
+- exactly-once delivery limitations
+- why idempotency is critical
+- transactional processing boundaries
+-----------------
+
+
+Step 11 — Idempotency
+-----------------
+Implement idempotency for all event consumers.
+
+Requirements:
+- prevent duplicate processing
+- store processed message IDs
+- handle replay safely
+
+Please:
+- design idempotency tables
+- explain transactional boundaries
+- implement middleware/helpers
+- explain distributed systems implications
+
+Apply saga patterns:
+- choreography-based saga
+- compensating transactions
+- distributed workflow coordination
+
+Explain:
+- why 2PC is avoided
+- compensation design
+- eventual consistency guarantees
+- saga failure handling
+-----------------
+
+
+Phase 5 — Saga Pattern
+Step 12 — Choreography Saga
+-----------------
+Implement a saga workflow for order processing.
+
+Flow:
+1. OrderCreated
+2. InventoryReserved
+3. PaymentSucceeded
+4. OrderCompleted
+
+Failure cases:
+- InventoryRejected
+- PaymentFailed
+
+Compensating actions:
+- release inventory
+- cancel order
+
+Please:
+- explain choreography saga design
+- implement event flow
+- explain consistency guarantees
+- explain tradeoffs vs orchestration
+
+Apply orchestration patterns:
+- process manager
+- orchestration saga
+- workflow state machine
+
+Explain:
+- orchestration vs choreography tradeoffs
+- centralized workflow coordination
+- workflow persistence strategy
+-----------------
+
+
+Step 13 — Orchestrator Saga
+-----------------
+Implement an orchestrator service for distributed transactions.
+
+Requirements:
+- central saga coordinator
+- workflow state machine
+- timeout handling
+- retries
+- compensation events
+
+Please:
+- compare orchestration vs choreography
+- implement workflow engine structure
+- explain persistence strategy
+
+Apply CQRS patterns:
+- read/write separation
+- projections
+- materialized views
+- asynchronous read models
+
+Explain:
+- projection rebuilding
+- eventual consistency in read models
+- scaling read-heavy systems
+-----------------
+
+
+Phase 6 — CQRS + Event Sourcing
+Step 14 — Read Models
+-----------------
+Implement CQRS read models.
+
+Requirements:
+- separate read database
+- consume events
+- build materialized views
+
+Views:
+- user order history
+- sales dashboard
+- inventory dashboard
+
+Please:
+- explain CQRS architecture
+- explain projection rebuilding
+- implement event consumers
+
+Apply event sourcing patterns:
+- append-only event store
+- aggregate reconstruction
+- snapshotting
+- optimistic concurrency control
+
+Explain:
+- event replay
+- rebuilding aggregate state
+- event schema evolution
+- storage tradeoffs
+-----------------
+
+
+Step 15 — Event Sourcing
+-----------------
+Convert order-service to event sourcing.
+
+Requirements:
+- append-only event store
+- rebuild aggregate state from events
+- optimistic concurrency
+- snapshots
+
+Events:
+- OrderCreated
+- PaymentSucceeded
+- OrderCompleted
+- OrderCancelled
+
+Please:
+- explain aggregate design
+- implement event store schema
+- explain replay strategies
+
+Apply streaming architecture patterns:
+- partitioned event streams
+- consumer groups
+- replayable logs
+- ordered partitions
+
+Explain:
+- stream retention
+- partition strategy
+- event replay workflows
+-----------------
+
+
+Phase 7 — Observability
+Step 16 — Distributed Tracing
+-----------------
+Add distributed tracing to all services.
+
+Requirements:
+- OpenTelemetry
+- Jaeger
+- correlation IDs
+- trace propagation via kafka
+
+Please:
+- explain tracing architecture
+- implement middleware
+- show trace flow between services
+
+Apply observability patterns:
+- distributed tracing
+- correlation IDs
+- context propagation
+
+Explain:
+- trace propagation across kafka
+- debugging distributed systems
+- end-to-end request visibility
+-----------------
+
+
+Step 17 — Metrics + Monitoring
+-----------------
+Add monitoring to the microservices platform.
+
+Requirements:
+- Prometheus
+- Grafana
+- service metrics
+- kafka metrics
+- PostgreSQL metrics
+
+Please:
+- create dashboards
+- explain alerting strategy
+- implement metrics endpoints
+
+Apply operational patterns:
+- centralized metrics
+- service health monitoring
+- operational telemetry
+
+Explain:
+- RED metrics
+- alerting strategy
+- SLA/SLO considerations
+-----------------
+
+
+Phase 8 — Production Engineering
+Step 18 — Kubernetes
+-----------------
+Deploy the microservices platform to Kubernetes.
+
+Requirements:
+- Helm charts
+- secrets
+- configmaps
+- ingress
+- autoscaling
+
+Please:
+- explain deployment architecture
+- generate manifests
+- explain production best practices
+
+Apply cloud-native patterns:
+- immutable deployments
+- horizontal scaling
+- self-healing infrastructure
+
+Explain:
+- scaling consumers
+- autoscaling event processors
+- broker high availability
+-----------------
