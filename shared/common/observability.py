@@ -11,6 +11,10 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from prometheus_fastapi_instrumentator import Instrumentator
+from opentelemetry._logs import set_logger_provider
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
 
 class CustomJsonFormatter(jsonlogger.JsonFormatter):
     def add_fields(self, log_record, record, message_dict):
@@ -50,15 +54,16 @@ def setup_observability(app: FastAPI, service_name: str) -> None:
     
     logger = logging.getLogger("Observability")
     
-    # 2. Setup OpenTelemetry Tracer
+    # 2. Setup OpenTelemetry Tracer and Logger
     endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317")
-    logger.info(f"Connecting OTel Tracer to exporter endpoint: {endpoint}")
+    logger.info(f"Connecting OTel Tracer & Logger to exporter endpoint: {endpoint}")
     
     resource = Resource.create(attributes={
         "service.name": service_name,
         "environment": os.getenv("ENVIRONMENT", "production")
     })
     
+    # Tracer initialization
     provider = TracerProvider(resource=resource)
     try:
         otlp_exporter = OTLPSpanExporter(endpoint=endpoint, insecure=True)
@@ -71,6 +76,21 @@ def setup_observability(app: FastAPI, service_name: str) -> None:
         logger.info("OpenTelemetry FastAPI auto-instrumentation successful.")
     except Exception as e:
         logger.error(f"Failed to initialize OpenTelemetry Tracer: {e}", exc_info=True)
+
+    # Logger initialization
+    logger_provider = LoggerProvider(resource=resource)
+    set_logger_provider(logger_provider)
+    try:
+        log_exporter = OTLPLogExporter(endpoint=endpoint, insecure=True)
+        log_processor = BatchLogRecordProcessor(log_exporter)
+        logger_provider.add_log_record_processor(log_processor)
+        
+        # Integrate with standard Python logging (capture all INFO and above logs)
+        otel_handler = LoggingHandler(level=logging.INFO, logger_provider=logger_provider)
+        logging.getLogger().addHandler(otel_handler)
+        logger.info("OpenTelemetry OTLP Logging initialized successfully.")
+    except Exception as e:
+        logger.error(f"Failed to initialize OpenTelemetry Logging: {e}", exc_info=True)
         
     # 3. Setup Prometheus FastAPI Instrumentator
     try:

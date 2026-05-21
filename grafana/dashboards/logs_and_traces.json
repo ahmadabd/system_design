@@ -35,7 +35,7 @@
             "type": "loki",
             "uid": "Loki"
           },
-          "expr": "sum by (level) (count_over_time({service_name=\"fastapi-loadbalancer-demo\", instance_id=~\"$instance_id\"} [5m]))",
+          "expr": "sum by (level) (count_over_time({service_name=~\"$service_name\", instance_id=~\"$instance_id\"} [5m]))",
           "legendFormat": "{{level}}",
           "refId": "A"
         }
@@ -71,7 +71,7 @@
             "type": "loki",
             "uid": "Loki"
           },
-          "expr": "{service_name=\"fastapi-loadbalancer-demo\", instance_id=~\"$instance_id\"}",
+          "expr": "{service_name=~\"$service_name\", instance_id=~\"$instance_id\"}",
           "refId": "A"
         }
       ],
@@ -93,11 +93,24 @@
           "type": "loki",
           "uid": "Loki"
         },
+        "definition": "label_values(service_name)",
+        "includeAll": true,
+        "multi": true,
+        "name": "service_name",
+        "query": "label_values(service_name)",
+        "refresh": 1,
+        "type": "query"
+      },
+      {
+        "datasource": {
+          "type": "loki",
+          "uid": "Loki"
+        },
         "definition": "label_values(instance_id)",
         "includeAll": true,
         "multi": true,
         "name": "instance_id",
-        "query": "label_values({service_name=\"fastapi-loadbalancer-demo\"}, instance_id)",
+        "query": "label_values({service_name=~\"$service_name\"}, instance_id)",
         "refresh": 1,
         "type": "query"
       }

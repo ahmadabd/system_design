@@ -328,6 +328,123 @@ locust
 ```
 And navigate to `http://localhost:8089` to specify target users, ramp-up rates, and view live response-time and error graphs.
 
+
+---
+
+### 7. Real-Time Kafka Inspection & Complete Service API Reference
+
+To make integration verification and debugging seamless, this section provides a complete reference of all microservice endpoints (accessible via the Traefik API Gateway) and the exact commands to monitor asynchronous event flows in Kafka in real time.
+
+#### A. Comprehensive API Endpoint Map
+All service interactions are routed through the Traefik Gateway on port `80`.
+
+| Bounded Context | Method | Gateway Path | Direct Port Path | Expected Payload / Params | Idempotency Key Required |
+| :--- | :--- | :--- | :--- | :--- | :---: |
+| **User Service** | `POST` | `/users` | `:8001/` | `{"username", "email", "password"}` | Yes (`X-Idempotency-Key`) |
+| **User Service** | `GET` | `/users/{id}` | `:8001/{id}` | None (Path Parameter) | No |
+| **Product Service** | `POST` | `/products` | `:8002/` | `{"name", "price", "stock"}` | Yes (`X-Idempotency-Key`) |
+| **Product Service** | `GET` | `/products` | `:8002/` | None | No |
+| **Product Service** | `GET` | `/products/{id}` | `:8002/{id}` | None (Path Parameter) | No |
+| **Order Service** | `POST` | `/orders` | `:8003/` | `{"user_id", "product_id", "quantity", "total_price"}` | Yes (`X-Idempotency-Key`) |
+| **Order Service** | `GET` | `/orders` | `:8003/` | None | No |
+| **Order Service** | `GET` | `/orders/{id}` | `:8003/{id}` | None (Path Parameter) | No |
+
+---
+
+#### B. Copy-Pasteable API Curl Examples
+
+##### 1. User Bounded Context
+* **Register a New User**:
+  ```bash
+  curl -i -X POST http://localhost/users \
+    -H "Content-Type: application/json" \
+    -H "X-Idempotency-Key: register-user-user1" \
+    -d '{"username": "dev_user", "email": "dev@example.com", "password": "SuperSecretPassword123"}'
+  ```
+* **Retrieve User Details**:
+  ```bash
+  curl -i http://localhost/users/1
+  ```
+
+##### 2. Product Catalog Bounded Context
+* **Create a Catalog Product**:
+  ```bash
+  curl -i -X POST http://localhost/products \
+    -H "Content-Type: application/json" \
+    -H "X-Idempotency-Key: create-product-prod1" \
+    -d '{"name": "UltraWide Gaming Monitor", "price": 449.99, "stock": 10}'
+  ```
+* **List All Products**:
+  ```bash
+  curl -i http://localhost/products
+  ```
+* **Retrieve Specific Product**:
+  ```bash
+  curl -i http://localhost/products/1
+  ```
+
+##### 3. Order Checkout Bounded Context (Triggers Saga Flow)
+* **Place an Order (Success Path - Stock Available)**:
+  ```bash
+  curl -i -X POST http://localhost/orders \
+    -H "Content-Type: application/json" \
+    -H "X-Idempotency-Key: submit-order-ord1" \
+    -d '{"user_id": 1, "product_id": 1, "quantity": 1, "total_price": 449.99}'
+  ```
+* **List All Placed Orders**:
+  ```bash
+  curl -i http://localhost/orders
+  ```
+* **Retrieve Specific Order Details**:
+  ```bash
+  curl -i http://localhost/orders/1
+  ```
+
+---
+
+#### C. Real-Time Kafka Topic & Message Inspection
+
+Since all microservices coordinate asynchronously via Kafka, you can inspect topics and event messages directly by running commands inside the running `kafka` container.
+
+##### 1. List Active Kafka Topics
+List all event-driven topics currently registered in the KRaft broker:
+```bash
+docker exec -it kafka kafka-topics --bootstrap-server localhost:9092 --list
+```
+*Expected Output:*
+```text
+inventory.failed
+inventory.reserved
+order.created
+user.registered
+```
+
+##### 2. Stream Live Integration Events
+Use `kafka-console-consumer` to listen to events in real time. Open a separate terminal window and run these commands to watch messages as you execute the API requests above.
+
+* **Monitor `order.created` (Published by Order Service)**:
+  ```bash
+  docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic order.created --from-beginning
+  ```
+* **Monitor `inventory.reserved` (Success Path - Published by Product Service)**:
+  ```bash
+  docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic inventory.reserved --from-beginning
+  ```
+* **Monitor `inventory.failed` (Failure Path - Published by Product Service)**:
+  ```bash
+  docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic inventory.failed --from-beginning
+  ```
+* **Monitor `user.registered` (Published by User Service)**:
+  ```bash
+  docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic user.registered --from-beginning
+  ```
+
+> [!TIP]
+> Add `--property print.key=true --property key.separator=" | "` to the consumer commands to see the Kafka partition keys (used for ordering guarantees) alongside the JSON payload. For example:
+> ```bash
+> docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic order.created --from-beginning --property print.key=true --property key.separator=" | "
+> ```
+
 ---
 
 ## 📝 8. Stand-Alone System Design Algorithms (For Learning)
