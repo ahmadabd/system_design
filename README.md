@@ -8,45 +8,45 @@ A production-grade, highly available, resilient, and observable E-Commerce platf
 
 ```mermaid
 graph TD
-    Client[Client / Locust Load Tester] -->|Port 80 (Virtual IP)| Keepalived{Keepalived Master/Backup VRRP}
-    Keepalived -->|Active Ingress| Traefik[Traefik Master Load Balancer]
-    Keepalived -.->|Failover Ingress| TraefikBackup[Traefik Backup Load Balancer]
+    Client["Client / Locust Load Tester"] -->|"Port 80 (Virtual IP)"| Keepalived{"Keepalived Master/Backup VRRP"}
+    Keepalived -->|"Active Ingress"| Traefik["Traefik Master Load Balancer"]
+    Keepalived -.->|"Failover Ingress"| TraefikBackup["Traefik Backup Load Balancer"]
 
     subgraph API Gateway Routing (Traefik)
-        Traefik & TraefikBackup -->|Rate Limiting & Load Shedding| Router[Path-Based Prefix Router]
+        Traefik & TraefikBackup -->|"Rate Limiting & Load Shedding"| Router["Path-Based Prefix Router"]
     end
 
     subgraph DDD Bounded Contexts (FastAPI)
-        Router -->|/users/*| UserServ[user-service:8001]
-        Router -->|/products/*| ProdServ[product-service:8002]
-        Router -->|/orders/*| OrdServ[order-service:8003]
+        Router -->|"/users/*"| UserServ["user-service:8001"]
+        Router -->|"/products/*"| ProdServ["product-service:8002"]
+        Router -->|"/orders/*"| OrdServ["order-service:8003"]
     end
 
     subgraph Data & Caching Tier
-        UserServ -->|db_breaker| UserDB[(user_db: PostgreSQL)]
-        ProdServ -->|db_breaker| ProdDB[(product_db: PostgreSQL)]
-        OrdServ -->|db_breaker| OrdDB[(order_db: PostgreSQL)]
+        UserServ -->|"db_breaker"| UserDB[("user_db: PostgreSQL")]
+        ProdServ -->|"db_breaker"| ProdDB[("product_db: PostgreSQL")]
+        OrdServ -->|"db_breaker"| OrdDB[("order_db: PostgreSQL")]
         
-        UserServ & ProdServ & OrdServ -->|Idempotency Cache| Redis[(redis: Redis 7)]
+        UserServ & ProdServ & OrdServ -->|"Idempotency Cache"| Redis[("redis: Redis 7")]
     end
 
     subgraph Asynchronous Event Broker
-        UserServ -.->|kafka_breaker| Kafka[(Apache Kafka KRaft Broker)]
-        ProdServ -.->|kafka_breaker| Kafka
-        OrdServ -.->|kafka_breaker| Kafka
+        UserServ -.->|"kafka_breaker"| Kafka[("Apache Kafka KRaft Broker")]
+        ProdServ -.->|"kafka_breaker"| Kafka
+        OrdServ -.->|"kafka_breaker"| Kafka
         
-        Kafka -.->|Event Subscription / Inbox Pattern| UserServ
-        Kafka -.->|Event Subscription / Inbox Pattern| ProdServ
-        Kafka -.->|Event Subscription / Inbox Pattern| OrdServ
+        Kafka -.->|"Event Subscription / Inbox Pattern"| UserServ
+        Kafka -.->|"Event Subscription / Inbox Pattern"| ProdServ
+        Kafka -.->|"Event Subscription / Inbox Pattern"| OrdServ
     end
 
     subgraph Distributed Observability Stack
-        UserServ & ProdServ & OrdServ & Traefik -->|OTel Traces & Metrics| OTel[OTel Collector:4317]
-        OTel -->|Traces| JG[Jaeger UI:16686]
-        OTel -->|Metrics| PR[Prometheus:9090]
-        OTel -->|Logs| LK[Loki:3100]
-        PR -->|Dashboards| GF[Grafana:3000]
-        PR -->|Alerts| AM[Alertmanager:9093]
+        UserServ & ProdServ & OrdServ & Traefik -->|OTel Traces & Metrics| OTel["OTel Collector:4317"]
+        OTel -->|Traces| JG["Jaeger UI:16686"]
+        OTel -->|Metrics| PR["Prometheus:9090"]
+        OTel -->|Logs| LK["Loki:3100"]
+        PR -->|Dashboards| GF["Grafana:3000"]
+        PR -->|Alerts| AM["Alertmanager:9093"]
     end
 ```
 
