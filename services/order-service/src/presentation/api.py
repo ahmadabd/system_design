@@ -92,3 +92,39 @@ async def get_order(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Database circuit breaker active: {str(cb_err)}."
         )
+
+@router.get("/{order_id:int}/status-stream")
+async def order_status_stream(
+    order_id: int,
+    service: OrderApplicationService = Depends(get_order_service)
+):
+    """
+    Server-Sent Events (SSE) endpoint to stream real-time order status transitions.
+    Can be tested with: curl -N http://localhost/orders/1/status-stream
+    """
+    from fastapi.responses import StreamingResponse
+    import asyncio
+
+    async def event_generator():
+        last_status = None
+        # Max check: 60 seconds (120 iterations * 0.5s) to prevent infinite connection hanging
+        for _ in range(120):
+            try:
+                order = await service.get_order_by_id(order_id)
+                if not order:
+                    yield f"data: {{\"error\": \"Order not found\"}}\n\n"
+                    break
+                
+                if order.status != last_status:
+                    last_status = order.status
+                    yield f"data: {{\"order_id\": {order_id}, \"status\": \"{order.status}\"}}\n\n"
+                    
+                if order.status in ["CONFIRMED", "CANCELLED"]:
+                    break
+            except Exception as e:
+                yield f"data: {{\"error\": \"{str(e)}\"}}\n\n"
+                break
+            await asyncio.sleep(0.5)
+            
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+

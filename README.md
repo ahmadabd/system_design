@@ -282,14 +282,27 @@ curl -i -X POST http://localhost/orders \
 - `product-service` consumes `order.created`, decrements database stock from `15` to `13`, and publishes `inventory.reserved` to Kafka.
 - `order-service` consumes `inventory.reserved` and transitions the order status to `CONFIRMED`.
 
-Verify the final order status and remaining catalog stock:
-```bash
-# Get Order #1 Details (Should reflect status: CONFIRMED)
-curl http://localhost/orders/1
+Verify the final order status in real time or via API query:
+* **Option A: Real-Time Stream (Highly Recommended)**
+  Start a `curl` listener in one terminal *before* submitting the order in another terminal (adjust order ID if needed):
+  ```bash
+  curl -i -N http://localhost/orders/1/status-stream
+  ```
+  Expected Stream Output:
+  ```text
+  data: {"order_id": 1, "status": "PENDING"}
+  data: {"order_id": 1, "status": "CONFIRMED"}
+  ```
+* **Option B: Standard GET Polling**
+  ```bash
+  # Get Order #1 Details (Should reflect status: CONFIRMED)
+  curl http://localhost/orders/1
+  ```
 
-# Get Product #1 Details (Should reflect stock: 13)
-curl http://localhost/products/1
-```
+* **Verify remaining catalog stock** (Should reflect stock: 13):
+  ```bash
+  curl http://localhost/products/1
+  ```
 
 ### 4. Saga Transaction — Failure Path (Insufficient Stock)
 Attempt to place an order for 20 keyboards (Catalog has only 13 in stock):
@@ -304,14 +317,27 @@ curl -i -X POST http://localhost/orders \
 - `product-service` consumes `order.created`, detects insufficient stock, and publishes `inventory.failed` to Kafka.
 - `order-service` consumes `inventory.failed` and transitions the order status to `CANCELLED`.
 
-Verify the final order status and catalog stock (retains original stock level):
-```bash
-# Get Order #2 Details (Should reflect status: CANCELLED)
-curl http://localhost/orders/2
+Verify the final order status in real time or via API query:
+* **Option A: Real-Time Stream (Highly Recommended)**
+  Start a `curl` listener in one terminal *before* submitting the order (adjust order ID if needed):
+  ```bash
+  curl -i -N http://localhost/orders/2/status-stream
+  ```
+  Expected Stream Output:
+  ```text
+  data: {"order_id": 2, "status": "PENDING"}
+  data: {"order_id": 2, "status": "CANCELLED"}
+  ```
+* **Option B: Standard GET Polling**
+  ```bash
+  # Get Order #2 Details (Should reflect status: CANCELLED)
+  curl http://localhost/orders/2
+  ```
 
-# Get Product #1 Details (Should reflect stock: 13)
-curl http://localhost/products/1
-```
+* **Verify catalog stock** (Should retain original stock level: 13):
+  ```bash
+  curl http://localhost/products/1
+  ```
 
 ### 5. Programmatic Circuit Breaker & Self-Healing Demo
 Simulate a database server outage by stopping the User Postgres container:
@@ -363,6 +389,7 @@ All service interactions are routed through the Traefik Gateway on port `80`.
 | **Order Service** | `POST` | `/orders` | `:8003/` | `{"user_id", "product_id", "quantity", "total_price"}` | Yes (`X-Idempotency-Key`) |
 | **Order Service** | `GET` | `/orders` | `:8003/` | None | No |
 | **Order Service** | `GET` | `/orders/{id}` | `:8003/{id}` | None (Path Parameter) | No |
+| **Order Service** | `GET` | `/orders/{id}/status-stream` | `:8003/{id}/status-stream` | None (Real-time SSE Stream) | No |
 
 ---
 
@@ -413,6 +440,10 @@ All service interactions are routed through the Traefik Gateway on port `80`.
 * **Retrieve Specific Order Details**:
   ```bash
   curl -i http://localhost/orders/1
+  ```
+* **Stream Real-Time Order Status Transitions (SSE)**:
+  ```bash
+  curl -i -N http://localhost/orders/1/status-stream
   ```
 
 ---
