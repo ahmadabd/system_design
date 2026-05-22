@@ -18,3 +18,8 @@ class UserRepository(ABC):
     async def find_by_email(self, email: str) -> User | None:
         """Find a User by their email address"""
         pass
+
+    @abstractmethod
+    async def find_by_username(self, username: str) -> User | None:
+        """Find a User by their username"""
+        pass

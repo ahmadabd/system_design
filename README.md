@@ -231,7 +231,7 @@ Fill in the custom database credentials, port configurations, and Redis credenti
 
 You can easily verify the choreographed Saga and E2E resilience mechanisms directly through the Traefik Gateway (Port `80`).
 
-### 1. User Registration (REST API Idempotency)
+### 1. User Registration (REST API Idempotency & Validation)
 Register a new user context. Make sure to specify the `X-Idempotency-Key` header:
 ```bash
 curl -i -X POST http://localhost/users \
@@ -239,11 +239,26 @@ curl -i -X POST http://localhost/users \
   -H "X-Idempotency-Key: register-user-101" \
   -d '{"username": "johndoe", "email": "john@example.com", "password": "securepassword123"}'
 ```
-**Verification**: Send the exact same request again. You will receive an instantaneous `201 Created` response. Check the `user-service` container logs:
-```log
-user-service  | INFO: Idempotency hit! Returning cached response for key: idem:user-service:register-user-101
-```
-This confirms that Redis-backed API idempotency was hit and bypassed the database.
+
+**Verification**:
+- **Idempotent Retry**: Send the exact same request again with the *same* `X-Idempotency-Key` header. You will receive an instantaneous `201 Created` response containing the cached details because the Redis-backed idempotency system intercepts the request.
+- **Duplicate Email (New Key)**: Send a request using a *new* idempotency key, the same email `john@example.com`, but a different username:
+  ```bash
+  curl -i -X POST http://localhost/users \
+    -H "Content-Type: application/json" \
+    -H "X-Idempotency-Key: register-user-102" \
+    -d '{"username": "newjohndoe", "email": "john@example.com", "password": "securepassword123"}'
+  ```
+  Expected Response: `400 Bad Request` with payload `{"detail":"Email 'john@example.com' is already registered."}`.
+- **Duplicate Username (New Key)**: Send a request using a *new* idempotency key, the same username `johndoe`, but a different email:
+  ```bash
+  curl -i -X POST http://localhost/users \
+    -H "Content-Type: application/json" \
+    -H "X-Idempotency-Key: register-user-103" \
+    -d '{"username": "johndoe", "email": "newjohn@example.com", "password": "securepassword123"}'
+  ```
+  Expected Response: `400 Bad Request` with payload `{"detail":"Username 'johndoe' is already registered."}`.
+
 
 ### 2. Product Catalog Creation
 Create a product for ordering:

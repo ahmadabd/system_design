@@ -54,3 +54,12 @@ class SQLAlchemyUserRepository(UserRepository):
         if not db_user:
             return None
         return self._to_domain(db_user)
+
+    async def find_by_username(self, username: str) -> User | None:
+        """Find user by username and map to Domain Aggregate"""
+        query = select(UserDB).where(UserDB.username == username)
+        result = await self.session.execute(query)
+        db_user = result.scalar_one_or_none()
+        if not db_user:
+            return None
+        return self._to_domain(db_user)

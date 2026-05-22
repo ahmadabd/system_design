@@ -18,6 +18,11 @@ class UserApplicationService:
         """Register a new user, persist, and publish a UserRegistered integration event"""
         logger.info(f"Attempting to register user: {command.email}")
         
+        # Enforce business invariant: username uniqueness
+        existing_user_by_username = await self.user_repo.find_by_username(command.username)
+        if existing_user_by_username:
+            raise ValueError(f"Username '{command.username}' is already registered.")
+
         # Enforce business invariant: email uniqueness
         existing_user = await self.user_repo.find_by_email(command.email)
         if existing_user:
