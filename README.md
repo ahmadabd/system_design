@@ -19,7 +19,7 @@ graph TD
     subgraph BoundedContexts ["DDD Bounded Contexts (FastAPI)"]
         Router -->|"/users/*"| UserServ["user-service:8001"]
         Router -->|"/products/*"| ProdServ["product-service:8002"]
-        Router -->|"/orders/*"| OrdServ["order-service:8003"]
+        Router -->|"/orders/* & /orders/{id}/status-stream"| OrdServ["order-service:8003"]
     end
 
     subgraph DataCaching ["Data & Caching Tier"]
@@ -158,8 +158,13 @@ sequenceDiagram
     activate OrderService
     OrderService->>OrderService: Save Order (status: PENDING)
     OrderService->>Kafka: Publish "order.created" Event
-    OrderService-->>Client: Returns Order (PENDING)
+    OrderService-->>Client: Returns Order DTO (PENDING)
     deactivate OrderService
+
+    Note over Client, OrderService: Client establishes SSE connection (GET /orders/{id}/status-stream)
+    Client->>OrderService: Establish SSE Stream Connection
+    activate OrderService
+    OrderService-->>Client: Stream Push: status: PENDING
 
     Kafka->>ProductService: Deliver "order.created" Event
     activate ProductService
@@ -178,12 +183,17 @@ sequenceDiagram
         activate OrderService
         OrderService->>OrderService: Update Order (status: CONFIRMED)
         deactivate OrderService
+        OrderService-->>Client: Stream Push: status: CONFIRMED
     else Failure Path
         Kafka->>OrderService: Deliver "inventory.failed" Event
         activate OrderService
         OrderService->>OrderService: Update Order (status: CANCELLED)
         deactivate OrderService
+        OrderService-->>Client: Stream Push: status: CANCELLED
     end
+    
+    OrderService--xClient: Close SSE Stream Connection
+    deactivate OrderService
 ```
 
 ---
