@@ -22,6 +22,20 @@ services:
     networks:
       - ecommerce-network
 
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      DYNAMIC_CONFIG_ENABLED: 'true'
+    networks:
+      - ecommerce-network
+    depends_on:
+      - kafka
+
   user-db:
     image: postgres:17-alpine
     container_name: user-db
@@ -78,7 +92,7 @@ services:
       - KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS:-kafka:29092}
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
       - SERVICE_NAME=user-service
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-sys_design_secure_cache_pass_2026}@redis:6379
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-sys_design_secure_cache_pass_2026}@redis:${REDIS_PORT:-6379}
     depends_on:
       - user-db
       - kafka
@@ -99,7 +113,7 @@ services:
       - KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS:-kafka:29092}
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
       - SERVICE_NAME=product-service
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-sys_design_secure_cache_pass_2026}@redis:6379
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-sys_design_secure_cache_pass_2026}@redis:${REDIS_PORT:-6379}
     depends_on:
       - product-db
       - kafka
@@ -120,7 +134,7 @@ services:
       - KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS:-kafka:29092}
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
       - SERVICE_NAME=order-service
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-sys_design_secure_cache_pass_2026}@redis:6379
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-sys_design_secure_cache_pass_2026}@redis:${REDIS_PORT:-6379}
     depends_on:
       - order-db
       - kafka
@@ -137,7 +151,7 @@ services:
       - "80:80"
     networks:
       ecommerce-network:
-        ipv4_address: 172.20.0.10
+        ipv4_address: 172.20.0.250
     depends_on:
       - user-service
       - product-service
@@ -151,7 +165,7 @@ services:
       - ./dynamic.yml:/etc/traefik/dynamic.yml:ro
     networks:
       ecommerce-network:
-        ipv4_address: 172.20.0.11
+        ipv4_address: 172.20.0.251
     depends_on:
       - user-service
       - product-service
@@ -186,9 +200,9 @@ services:
   redis:
     image: redis:7-alpine
     container_name: redis
-    command: redis-server --requirepass ${REDIS_PASSWORD:-sys_design_secure_cache_pass_2026}
+    command: redis-server --port ${REDIS_PORT:-6379} --requirepass ${REDIS_PASSWORD:-sys_design_secure_cache_pass_2026}
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:${REDIS_PORT:-6379}"
     volumes:
       - redis_data:/data
     networks:
