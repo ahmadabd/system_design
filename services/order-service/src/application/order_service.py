@@ -1,6 +1,7 @@
 import logging
 from src.domain.order import Order
 from src.domain.repository import OrderRepository
+from src.domain.services import UserClient, ProductClient
 from src.application.commands import CreateOrderCommand, ConfirmOrderCommand, CancelOrderCommand
 from src.application.dtos import OrderDTO
 from shared.contracts.events import OrderCreatedEvent
@@ -8,13 +9,28 @@ from shared.contracts.events import OrderCreatedEvent
 logger = logging.getLogger("OrderApplicationService")
 
 class OrderApplicationService:
-    def __init__(self, order_repo: OrderRepository, event_publisher):
+    def __init__(
+        self, 
+        order_repo: OrderRepository, 
+        event_publisher,
+        user_client: UserClient = None,
+        product_client: ProductClient = None
+    ):
         self.order_repo = order_repo
         self.event_publisher = event_publisher
+        self.user_client = user_client
+        self.product_client = product_client
 
     async def create_order(self, command: CreateOrderCommand) -> OrderDTO:
         """Place a pending order and dispatch OrderCreated integration event"""
         logger.info(f"Creating order for User: {command.user_id}, Product: {command.product_id}")
+        
+        # Verify downstream invariants via domain ports
+        if self.user_client and not await self.user_client.verify_user(command.user_id):
+            raise ValueError(f"User with ID {command.user_id} does not exist.")
+            
+        if self.product_client and not await self.product_client.verify_product(command.product_id):
+            raise ValueError(f"Product with ID {command.product_id} does not exist.")
         
         # Instantiate aggregate root
         order = Order.create(

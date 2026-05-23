@@ -67,12 +67,34 @@ class KafkaManager:
             raise RuntimeError("Producer is not active. Call connect() first.")
         
         async def _do_publish():
-            # routing_key maps directly to the Kafka topic name
             topic = routing_key
             key = str(event_data.get("order_id") or event_data.get("user_id") or "").encode("utf-8") or None
             
-            await self.producer.send_and_wait(topic, value=event_data, key=key)
-            logger.info(f"Published message to Kafka topic '{topic}' with key '{key.decode() if key else 'None'}'")
+            # Start an active PRODUCER span for visual timeline tracking in Jaeger
+            from opentelemetry import trace
+            tracer = trace.get_tracer("kafka-producer")
+            with tracer.start_as_current_span(
+                name=f"kafka.send {topic}",
+                kind=trace.SpanKind.PRODUCER
+            ) as span:
+                span.set_attribute("messaging.system", "kafka")
+                span.set_attribute("messaging.destination", topic)
+                if key:
+                    span.set_attribute("messaging.kafka.partition_key", key.decode("utf-8"))
+                
+                # Inject the active PRODUCER span context into the headers
+                headers_dict = {}
+                from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+                TraceContextTextMapPropagator().inject(headers_dict)
+                
+                # Convert to list of tuples format: (str, bytes) for Kafka headers
+                kafka_headers = [
+                    (k, v.encode("utf-8")) 
+                    for k, v in headers_dict.items()
+                ]
+                
+                await self.producer.send_and_wait(topic, value=event_data, key=key, headers=kafka_headers)
+                logger.info(f"Published message to Kafka topic '{topic}' with key '{key.decode() if key else 'None'}'")
 
         await self.kafka_breaker.call(_do_publish)
 
@@ -114,7 +136,32 @@ class KafkaManager:
                     async for msg in consumer:
                         try:
                             logger.info(f"Received event from Kafka topic '{topic}' in group '{group_id}'")
-                            await callback(msg.value)
+                            
+                            # Extract OTel context from Kafka message headers
+                            headers_dict = {}
+                            if msg.headers:
+                                for k, v in msg.headers:
+                                    key_str = k.decode("utf-8") if isinstance(k, bytes) else k
+                                    val_str = v.decode("utf-8") if isinstance(v, bytes) else v
+                                    headers_dict[key_str] = val_str
+                                    
+                            from opentelemetry import trace
+                            from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+                            parent_context = TraceContextTextMapPropagator().extract(carrier=headers_dict)
+                            
+                            # Start a consumer span with parent link
+                            tracer = trace.get_tracer("kafka-consumer")
+                            with tracer.start_as_current_span(
+                                name=f"kafka.consume {topic}",
+                                context=parent_context,
+                                kind=trace.SpanKind.CONSUMER
+                            ) as span:
+                                span.set_attribute("messaging.system", "kafka")
+                                span.set_attribute("messaging.destination", topic)
+                                span.set_attribute("messaging.kafka.consumer_group", group_id)
+                                
+                                # Process the message callback under the active span context
+                                await callback(msg.value)
                         except Exception as cb_err:
                             logger.error(
                                 f"Error handling message in consumer callback for topic '{topic}': {cb_err}",

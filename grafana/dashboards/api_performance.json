@@ -106,13 +106,13 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(rate(http_request_duration_seconds_count{instance=~\"$instance\"}[5m])) by (instance, handler)",
-          "legendFormat": "{{instance}} - {{handler}}",
+          "expr": "sum(rate(traefik_entrypoint_requests_total[5m])) by (code, method)",
+          "legendFormat": "{{method}} - {{code}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Throughput (RPS)",
+      "title": "Gateway Throughput (RPS)",
       "type": "timeseries"
     },
     {
@@ -260,13 +260,13 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(rate(http_request_duration_seconds_count{instance=~\"$instance\", status=~\"5..\"}[5m])) / sum(rate(http_request_duration_seconds_count{instance=~\"$instance\"}[5m])) * 100",
-          "legendFormat": "Error Rate",
+          "expr": "sum(rate(traefik_entrypoint_requests_total{code=~\"[45]..\"}[5m])) / sum(rate(traefik_entrypoint_requests_total[5m])) * 100 or vector(0)",
+          "legendFormat": "Gateway Error / Limit Rate",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Error Rate (5xx)",
+      "title": "Gateway Error & Limit Rate (4xx/5xx)",
       "type": "stat"
     }
   ],

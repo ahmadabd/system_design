@@ -4,6 +4,7 @@ from src.infrastructure.db_setup import db
 from src.infrastructure.config import settings
 from src.adapter.repository import SQLAlchemyOrderRepository
 from src.adapter.messaging_pub import OrderMessagingPublisher
+from src.adapter.service_clients import HTTPUserClient, HTTPProductClient
 from src.application.order_service import OrderApplicationService
 from src.application.commands import CreateOrderCommand
 from src.application.dtos import OrderDTO
@@ -11,6 +12,7 @@ from src.presentation.schemas import CreateOrderRequest
 from shared.common.messaging import KafkaManager
 from shared.common.idempotency import IdempotencyManager, idempotent_api
 from shared.common.resilience import CircuitBreakerOpenException
+from shared.common.http_client import ResilientHTTPClient
 
 router = APIRouter(prefix="", tags=["Orders"])
 
@@ -19,6 +21,11 @@ idempotency_manager = IdempotencyManager(settings.REDIS_URL)
 
 # Establish broker manager for API checkout triggers
 mq_manager = KafkaManager(settings.KAFKA_BOOTSTRAP_SERVERS)
+
+# Establish resilient HTTP client and downstream service client adapters
+http_client = ResilientHTTPClient(timeout=5.0)
+user_client = HTTPUserClient(http_client, settings.USER_SERVICE_URL)
+product_client = HTTPProductClient(http_client, settings.PRODUCT_SERVICE_URL)
 
 async def get_order_service(
     session: AsyncSession = Depends(db.get_session)
@@ -31,7 +38,7 @@ async def get_order_service(
         await mq_manager.connect()
         
     publisher = OrderMessagingPublisher(mq_manager)
-    return OrderApplicationService(repo, publisher)
+    return OrderApplicationService(repo, publisher, user_client=user_client, product_client=product_client)
 
 @router.post("/", response_model=OrderDTO, status_code=status.HTTP_201_CREATED)
 @idempotent_api(idempotency_manager)

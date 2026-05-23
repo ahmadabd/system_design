@@ -71,9 +71,25 @@ def setup_observability(app: FastAPI, service_name: str) -> None:
         provider.add_span_processor(span_processor)
         trace.set_tracer_provider(provider)
         
-        # Instrument FastAPI app
-        FastAPIInstrumentor.instrument_app(app)
+        # Instrument FastAPI app, excluding health/metrics checks from traces
+        FastAPIInstrumentor.instrument_app(app, excluded_urls="health,metrics")
         logger.info("OpenTelemetry FastAPI auto-instrumentation successful.")
+
+        # Instrument SQLAlchemy globally to capture database spans
+        try:
+            from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+            SQLAlchemyInstrumentor().instrument()
+            logger.info("OpenTelemetry SQLAlchemy instrumentation successful.")
+        except Exception as sql_trace_err:
+            logger.warning(f"Could not instrument SQLAlchemy: {sql_trace_err}")
+
+        # Instrument Redis globally to capture caching/idempotency spans
+        try:
+            from opentelemetry.instrumentation.redis import RedisInstrumentor
+            RedisInstrumentor().instrument()
+            logger.info("OpenTelemetry Redis instrumentation successful.")
+        except Exception as redis_trace_err:
+            logger.warning(f"Could not instrument Redis: {redis_trace_err}")
     except Exception as e:
         logger.error(f"Failed to initialize OpenTelemetry Tracer: {e}", exc_info=True)
 
