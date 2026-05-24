@@ -30,6 +30,17 @@ http:
         - "strip-orders"
       service: order-service
 
+    payment-router:
+      rule: "PathPrefix(`/payments`)"
+      entryPoints:
+        - web
+      middlewares:
+        - "rate-limit"
+        - "load-shedding"
+        - "strip-payments"
+      service: payment-service
+
+
   middlewares:
     load-shedding:
       inFlightReq:
@@ -61,6 +72,12 @@ http:
         prefixes:
           - "/orders"
 
+    strip-payments:
+      stripPrefix:
+        prefixes:
+          - "/payments"
+
+
   services:
     user-service:
       loadBalancer:
@@ -88,3 +105,12 @@ http:
           timeout: 1s
         servers:
           - url: "http://order-service:8003"
+
+    payment-service:
+      loadBalancer:
+        healthCheck:
+          path: /health
+          interval: 2s
+          timeout: 1s
+        servers:
+          - url: "http://payment-service:8004"

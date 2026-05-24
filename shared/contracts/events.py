@@ -37,3 +37,17 @@ class InventoryFailedEvent(DomainEvent):
     order_id: int
     product_id: int
     reason: str
+
+class PaymentSucceededEvent(DomainEvent):
+    event_type: str = "PaymentSucceeded"
+    payment_id: str
+    order_id: int
+    amount: float
+
+class PaymentFailedEvent(DomainEvent):
+    event_type: str = "PaymentFailed"
+    payment_id: str
+    order_id: int
+    amount: float
+    reason: str
+

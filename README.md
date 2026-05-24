@@ -9,6 +9,7 @@ A production-grade, highly available, resilient, and observable E-Commerce platf
 ```mermaid
 graph TD
     Client["Client / Locust Load Tester"] -->|"Port 80 (Virtual IP)"| Keepalived{"Keepalived Master/Backup VRRP"}
+    Client -.->|"Direct Checkouts"| Keepalived
     Keepalived -->|"Active Ingress"| Traefik["Traefik Master Load Balancer"]
     Keepalived -.->|"Failover Ingress"| TraefikBackup["Traefik Backup Load Balancer"]
 
@@ -19,29 +20,33 @@ graph TD
     subgraph BoundedContexts ["DDD Bounded Contexts (FastAPI)"]
         Router -->|"/users/*"| UserServ["user-service:8001"]
         Router -->|"/products/*"| ProdServ["product-service:8002"]
-        Router -->|"/orders/* & /orders/{id}/status-stream"| OrdServ["order-service:8003"]
+        Router -->|"/orders/*"| OrdServ["order-service:8003"]
+        Router -->|"/payments/*"| PayServ["payment-service:8004"]
     end
 
     subgraph DataCaching ["Data & Caching Tier"]
         UserServ -->|"db_breaker"| UserDB[("user_db: PostgreSQL")]
         ProdServ -->|"db_breaker"| ProdDB[("product_db: PostgreSQL")]
         OrdServ -->|"db_breaker"| OrdDB[("order_db: PostgreSQL")]
+        PayServ -->|"db_breaker"| PayDB[("payment_db: PostgreSQL")]
         
-        UserServ & ProdServ & OrdServ -->|"Idempotency Cache"| Redis[("redis: Redis 7")]
+        UserServ & ProdServ & OrdServ & PayServ -->|"Idempotency Cache"| Redis[("redis: Redis 7")]
     end
 
     subgraph EventBroker ["Asynchronous Event Broker"]
         UserServ -.->|"kafka_breaker"| Kafka[("Apache Kafka KRaft Broker")]
         ProdServ -.->|"kafka_breaker"| Kafka
         OrdServ -.->|"kafka_breaker"| Kafka
+        PayServ -.->|"kafka_breaker"| Kafka
         
         Kafka -.->|"Event Subscription / Inbox Pattern"| UserServ
         Kafka -.->|"Event Subscription / Inbox Pattern"| ProdServ
         Kafka -.->|"Event Subscription / Inbox Pattern"| OrdServ
+        Kafka -.->|"Event Subscription / Inbox Pattern"| PayServ
     end
 
     subgraph Observability ["Distributed Observability Stack"]
-        UserServ & ProdServ & OrdServ & Traefik -->|"OTel Traces & Metrics"| OTel["OTel Collector:4317"]
+        UserServ & ProdServ & OrdServ & PayServ & Traefik -->|"OTel Traces & Metrics"| OTel["OTel Collector:4317"]
         OTel -->|"Traces"| JG["Jaeger UI:16686"]
         OTel -->|"Metrics"| PR["Prometheus:9090"]
         OTel -->|"Logs"| LK["Loki:3100"]
@@ -133,7 +138,11 @@ system_design/
 │   │   ├── Dockerfile
 │   │   ├── requirements.txt
 │   │   └── src/
-│   └── order-service/
+│   ├── order-service/
+│   │   ├── Dockerfile
+│   │   ├── requirements.txt
+│   │   └── src/
+│   └── payment-service/
 │       ├── Dockerfile
 │       ├── requirements.txt
 │       └── src/
@@ -153,6 +162,7 @@ sequenceDiagram
     participant OrderService as Order Service
     participant Kafka as Apache Kafka Broker
     participant ProductService as Product Service
+    participant PaymentService as Payment Service
 
     Client->>OrderService: POST /orders
     activate OrderService
@@ -171,25 +181,42 @@ sequenceDiagram
     alt Stock is Available
         ProductService->>ProductService: Decrement inventory stock in DB
         ProductService->>Kafka: Publish "inventory.reserved" Event
-        Note over ProductService, Kafka: Success Path
+        Note over ProductService, Kafka: Inventory Success
     else Insufficient Stock
         ProductService->>Kafka: Publish "inventory.failed" Event
-        Note over ProductService, Kafka: Failure Path
+        Note over ProductService, Kafka: Inventory Failure
     end
     deactivate ProductService
 
-    alt Success Path
-        Kafka->>OrderService: Deliver "inventory.reserved" Event
-        activate OrderService
-        OrderService->>OrderService: Update Order (status: CONFIRMED)
-        deactivate OrderService
-        OrderService-->>Client: Stream Push: status: CONFIRMED
-    else Failure Path
+    alt Stock Reservation Succeeded
+        Kafka->>PaymentService: Deliver "inventory.reserved" Event
+        activate PaymentService
+        PaymentService->>OrderService: Resilient GET /orders/{id} (Fetch total price)
+        PaymentService->>PaymentService: Execute simulated gateway transaction
+        alt Payment Succeeded (Success Path)
+            PaymentService->>Kafka: Publish "payment.succeeded" Event
+            Kafka->>OrderService: Deliver "payment.succeeded" Event
+            OrderService->>OrderService: Update Order (status: CONFIRMED)
+            OrderService-->>Client: Stream Push: status: CONFIRMED
+        else Payment Failed (Compensating Saga Rollback)
+            PaymentService->>Kafka: Publish "payment.failed" Event
+            par Saga Compensating Action
+                Kafka->>OrderService: Deliver "payment.failed" Event
+                OrderService->>OrderService: Update Order (status: CANCELLED)
+                OrderService-->>Client: Stream Push: status: CANCELLED
+            and Saga Stock Restoration
+                Kafka->>ProductService: Deliver "payment.failed" Event
+                ProductService->>OrderService: Resilient GET /orders/{id} (Fetch qty to restore)
+                ProductService->>ProductService: Increment stock (release_stock)
+            end
+        end
+        deactivate PaymentService
+    else Stock Reservation Failed
         Kafka->>OrderService: Deliver "inventory.failed" Event
         activate OrderService
         OrderService->>OrderService: Update Order (status: CANCELLED)
-        deactivate OrderService
         OrderService-->>Client: Stream Push: status: CANCELLED
+        deactivate OrderService
     end
     
     OrderService--xClient: Close SSE Stream Connection
@@ -230,6 +257,7 @@ Fill in the custom database credentials, port configurations, and Redis credenti
 | **User Service OpenAPI Docs** | `8001` | `http://localhost/users/docs` or `http://localhost:8001/docs` |
 | **Product Service OpenAPI Docs**| `8002` | `http://localhost/products/docs` or `http://localhost:8002/docs` |
 | **Order Service OpenAPI Docs** | `8003` | `http://localhost/orders/docs` or `http://localhost:8003/docs` |
+| **Payment Service OpenAPI Docs**| `8004` | `http://localhost/payments/docs` or `http://localhost:8004/docs` |
 | **Jaeger Distributed Tracing** | `16686` | `http://localhost:16686/` |
 | **Grafana Telemetry Dashboard**| `3000` | `http://localhost:3000/` |
 | **Prometheus Metrics Engine** | `9090` | `http://localhost:9090/` |
@@ -279,8 +307,8 @@ curl -i -X POST http://localhost/products \
   -d '{"name": "Mechanical Keyboard", "price": 99.99, "stock": 15}'
 ```
 
-### 3. Saga Transaction — Success Path (Stock Available)
-Place an order for 2 keyboards (Catalog has 15 in stock):
+### 3. Saga Transaction — Success Path (Stock & Payment Approved)
+Place an order for 2 keyboards (Catalog has 15 in stock). The total price `$199.98` is under the simulated `$1000` limit, leading to successful processing:
 ```bash
 curl -i -X POST http://localhost/orders \
   -H "Content-Type: application/json" \
@@ -290,7 +318,8 @@ curl -i -X POST http://localhost/orders \
 **Verification Logs**:
 - `order-service` writes a `PENDING` order, publishes `order.created` to Kafka, and returns `201 Created`.
 - `product-service` consumes `order.created`, decrements database stock from `15` to `13`, and publishes `inventory.reserved` to Kafka.
-- `order-service` consumes `inventory.reserved` and transitions the order status to `CONFIRMED`.
+- `payment-service` consumes `inventory.reserved`, calls `order-service` via a resilient HTTP client to verify the amount, executes a simulated success gateway transaction, and publishes `payment.succeeded` to Kafka.
+- `order-service` consumes `payment.succeeded` and transitions the order status to `CONFIRMED`.
 
 Verify the final order status in real time or via API query:
 * **Option A: Real-Time Stream (Highly Recommended)**
@@ -349,6 +378,34 @@ Verify the final order status in real time or via API query:
   curl http://localhost/products/1
   ```
 
+
+### 4.1 Saga Transaction — Compensating Failure Paths (Payment Failures)
+We can simulate and test two distinct Saga compensation rollbacks:
+
+#### Scenario A: Simulated Payment Rejection (Total Price > $1000)
+Submitting an order total price of `$1050.00` (which is over `$1000`) triggers an immediate payment rejection inside `payment-service`:
+```bash
+curl -i -X POST http://localhost/orders \
+  -H "Content-Type: application/json" \
+  -H "X-Idempotency-Key: saga-rejection-test-1" \
+  -d '{"user_id": 1, "product_id": 1, "quantity": 1, "total_price": 1050.00}'
+```
+**Verification**:
+- **Order Cancelled**: Listen to the stream `/orders/{id}/status-stream` or query `GET /orders/{id}`. The status transitions to `CANCELLED`.
+- **Stock Restored (Compensated)**: Product stock level decreases temporarily during reservation but is immediately restored back to its original count because the `payment.failed` event coordinates a compensation trigger in `product-service`.
+
+#### Scenario B: Simulated Payment Gateway Timeout (Quantity == 7)
+Ordering a quantity of exactly `7` triggers a simulated 4-second gateway connection hang inside `payment-service`, leading to a TimeoutException:
+```bash
+curl -i -X POST http://localhost/orders \
+  -H "Content-Type: application/json" \
+  -H "X-Idempotency-Key: saga-timeout-test-1" \
+  -d '{"user_id": 1, "product_id": 1, "quantity": 7, "total_price": 699.93}'
+```
+**Verification**:
+- The order status stays `PENDING` during the 4-second hang.
+- Once the simulated timeout is hit, the payment registers as failed. The order transitions to `CANCELLED` and stock is safely compensated back to the DB catalog.
+
 ### 5. Programmatic Circuit Breaker & Self-Healing Demo
 Simulate a database server outage by stopping the User Postgres container:
 ```bash
@@ -400,6 +457,8 @@ All service interactions are routed through the Traefik Gateway on port `80`.
 | **Order Service** | `GET` | `/orders` | `:8003/` | None | No |
 | **Order Service** | `GET` | `/orders/{id}` | `:8003/{id}` | None (Path Parameter) | No |
 | **Order Service** | `GET` | `/orders/{id}/status-stream` | `:8003/{id}/status-stream` | None (Real-time SSE Stream) | No |
+| **Payment Service** | `GET` | `/payments` | `:8004/` | None | No |
+| **Payment Service** | `GET` | `/payments/{order_id}` | `:8004/{order_id}` | None (Path Parameter) | No |
 
 ---
 
@@ -456,6 +515,16 @@ All service interactions are routed through the Traefik Gateway on port `80`.
   curl -i -N http://localhost/orders/1/status-stream
   ```
 
+##### 4. Payment Bounded Context
+* **List All Placed Payments**:
+  ```bash
+  curl -i http://localhost/payments
+  ```
+* **Retrieve Payment by Order ID**:
+  ```bash
+  curl -i http://localhost/payments/1
+  ```
+
 ---
 
 #### C. Real-Time Kafka Topic & Message Inspection
@@ -489,6 +558,14 @@ Use `kafka-console-consumer` to listen to events in real time. Open a separate t
 * **Monitor `inventory.failed` (Failure Path - Published by Product Service)**:
   ```bash
   docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic inventory.failed --from-beginning
+  ```
+* **Monitor `payment.succeeded` (Success Path - Published by Payment Service)**:
+  ```bash
+  docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic payment.succeeded --from-beginning
+  ```
+* **Monitor `payment.failed` (Failure/Compensating Path - Published by Payment Service)**:
+  ```bash
+  docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic payment.failed --from-beginning
   ```
 * **Monitor `user.registered` (Published by User Service)**:
   ```bash

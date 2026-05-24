@@ -2,8 +2,11 @@ services:
   kafka:
     image: confluentinc/cp-kafka:7.6.0
     container_name: kafka
+    user: root
     ports:
       - "${KAFKA_HOST_PORT:-9092}:9092"
+    volumes:
+      - kafka_data:/tmp/kraft-combined-logs
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
@@ -78,6 +81,21 @@ services:
     networks:
       - ecommerce-network
 
+  payment-db:
+    image: postgres:17-alpine
+    container_name: payment-db
+    ports:
+      - "${PAYMENT_DB_HOST_PORT:-5435}:5432"
+    environment:
+      - POSTGRES_DB=${PAYMENT_DB_NAME:-payment_db}
+      - POSTGRES_USER=${PAYMENT_DB_USER:-postgres}
+      - POSTGRES_PASSWORD=${PAYMENT_DB_PASSWORD:-postgres_password}
+    volumes:
+      - payment_db_data:/var/lib/postgresql/data
+    networks:
+      - ecommerce-network
+
+
   user-service:
     build:
       context: .
@@ -141,6 +159,28 @@ services:
     networks:
       - ecommerce-network
 
+  payment-service:
+    build:
+      context: .
+      dockerfile: services/payment-service/Dockerfile
+    container_name: payment-service
+    ports:
+      - "${PAYMENT_SERVICE_PORT:-8004}:${PAYMENT_SERVICE_PORT:-8004}"
+    environment:
+      - PORT=${PAYMENT_SERVICE_PORT:-8004}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - DATABASE_URL=postgresql+asyncpg://${PAYMENT_DB_USER:-postgres}:${PAYMENT_DB_PASSWORD:-postgres_password}@payment-db:5432/${PAYMENT_DB_NAME:-payment_db}
+      - KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS:-kafka:29092}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+      - SERVICE_NAME=payment-service
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-sys_design_secure_cache_pass_2026}@redis:${REDIS_PORT:-6379}
+      - ORDER_SERVICE_URL=http://order-service:8003
+    depends_on:
+      - payment-db
+      - kafka
+    networks:
+      - ecommerce-network
+
   traefik-master:
     image: traefik:v3.7
     container_name: traefik-master
@@ -156,6 +196,7 @@ services:
       - user-service
       - product-service
       - order-service
+      - payment-service
 
   traefik-backup:
     image: traefik:v3.7
@@ -170,6 +211,7 @@ services:
       - user-service
       - product-service
       - order-service
+      - payment-service
 
   keepalived-master:
     image: osixia/keepalived:latest
@@ -221,5 +263,7 @@ volumes:
   product_db_data:
   order_db_data:
   redis_data:
+  kafka_data:
+  payment_db_data:
 
 
