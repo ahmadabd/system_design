@@ -2,7 +2,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from src.domain.payment import Payment
 from src.domain.repository import PaymentRepository
-from src.adapter.db_models import PaymentDB
+from src.adapter.db_models import PaymentDB, MaterializedOrderDB
 
 class SQLAlchemyPaymentRepository(PaymentRepository):
     """Concrete SQLAlchemy Repository mapping Payment aggregates to the DB"""
@@ -61,3 +61,29 @@ class SQLAlchemyPaymentRepository(PaymentRepository):
         result = await self.session.execute(query)
         db_payments = result.scalars().all()
         return [self._to_domain(p) for p in db_payments]
+
+    async def save_materialized_order(self, order_id: int, total_price: float, quantity: int) -> None:
+        """Save/upsert local materialized order details (CQRS view)"""
+        db_order = await self.session.get(MaterializedOrderDB, order_id)
+        if db_order:
+            db_order.total_price = total_price
+            db_order.quantity = quantity
+        else:
+            db_order = MaterializedOrderDB(
+                order_id=order_id,
+                total_price=total_price,
+                quantity=quantity
+            )
+            self.session.add(db_order)
+        await self.session.flush()
+
+    async def find_materialized_order(self, order_id: int) -> dict | None:
+        """Find local materialized order details by order ID (CQRS view)"""
+        db_order = await self.session.get(MaterializedOrderDB, order_id)
+        if not db_order:
+            return None
+        return {
+            "order_id": db_order.order_id,
+            "total_price": db_order.total_price,
+            "quantity": db_order.quantity
+        }

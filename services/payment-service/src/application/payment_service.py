@@ -34,30 +34,38 @@ class PaymentApplicationService:
             logger.warning(f"Payment already exists for Order {order_id} (Status: {existing.status}). Skipping.")
             return
 
-        # 1. Fetch order details from order-service using the ResilientHTTPClient
-        client = ResilientHTTPClient(timeout=5.0)
-        try:
-            url = f"{settings.ORDER_SERVICE_URL}/{order_id}"
-            logger.info(f"Querying order-service: GET {url}")
-            response = await client.get(url)
-            response.raise_for_status()
-            order_data = response.json()
-        except Exception as http_err:
-            logger.error(f"Downstream validation failed: Could not fetch details for Order {order_id}: {http_err}")
-            # Dispatch event indicating payment failure due to network/system error
-            fail_event = PaymentFailedEvent(
-                payment_id=f"pay-fail-{uuid.uuid4().hex[:8]}",
-                order_id=order_id,
-                amount=0.0,
-                reason=f"System error: Unable to resolve order amount from downstream order-service. Error: {http_err}"
-            )
-            await self.event_publisher.publish_payment_failed(fail_event)
-            return
-        finally:
-            await client.close()
-
-        amount = order_data.get("total_price")
-        quantity = order_data.get("quantity", 1)
+        # 1. Fetch order details from local CQRS materialized state
+        order_data = await self.payment_repo.find_materialized_order(order_id)
+        
+        if order_data:
+            logger.info(f"CQRS Materialized State: Found order details locally for Order={order_id}: Price={order_data.get('total_price')}, Qty={order_data.get('quantity')}")
+            amount = order_data.get("total_price")
+            quantity = order_data.get("quantity", 1)
+        else:
+            logger.warning(f"CQRS Cache Miss: Order {order_id} details not found in local materialized state. Gracefully falling back to HTTP query...")
+            # Downstream validation HTTP query fallback
+            client = ResilientHTTPClient(timeout=5.0)
+            try:
+                url = f"{settings.ORDER_SERVICE_URL}/{order_id}"
+                logger.info(f"Querying order-service (HTTP Fallback): GET {url}")
+                response = await client.get(url)
+                response.raise_for_status()
+                fallback_data = response.json()
+                amount = fallback_data.get("total_price")
+                quantity = fallback_data.get("quantity", 1)
+            except Exception as http_err:
+                logger.error(f"HTTP Fallback Failed: Downstream validation failed. Could not fetch details for Order {order_id}: {http_err}")
+                # Dispatch event indicating payment failure due to network/system error
+                fail_event = PaymentFailedEvent(
+                    payment_id=f"pay-fail-{uuid.uuid4().hex[:8]}",
+                    order_id=order_id,
+                    amount=0.0,
+                    reason=f"System error: Unable to resolve order amount from downstream order-service. Error: {http_err}"
+                )
+                await self.event_publisher.publish_payment_failed(fail_event)
+                return
+            finally:
+                await client.close()
 
         if amount is None:
             logger.error(f"Order data retrieved for Order {order_id} contains no total_price: {order_data}")

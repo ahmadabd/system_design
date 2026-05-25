@@ -18,7 +18,7 @@ processors:
         action: insert
 
 exporters:
-  otlp/jaeger:
+  otlp_grpc/jaeger:
     endpoint: jaeger:4317
     tls:
       insecure: true
@@ -28,7 +28,7 @@ exporters:
     send_timestamps: true
     metric_expiration: 180s
   
-  otlphttp/loki:
+  otlp_http/loki:
     endpoint: "http://loki:3100/otlp"
 
   debug:
@@ -39,7 +39,7 @@ service:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlp/jaeger, debug]
+      exporters: [otlp_grpc/jaeger, debug]
     metrics:
       receivers: [otlp]
       processors: [batch]
@@ -47,4 +47,4 @@ service:
     logs:
       receivers: [otlp]
       processors: [resource, batch]
-      exporters: [otlphttp/loki, debug]
+      exporters: [otlp_http/loki, debug]

@@ -6,6 +6,7 @@ from src.adapter.repository import SQLAlchemyProductRepository
 from src.adapter.messaging_pub import ProductMessagingPublisher
 from src.application.product_service import ProductApplicationService
 from src.application.commands import ReserveInventoryCommand
+from src.adapter.db_models import MaterializedReservationDB
 
 logger = logging.getLogger("ProductMessagingSubscriber")
 
@@ -63,17 +64,25 @@ class ProductMessagingSubscriber:
                 service = ProductApplicationService(repo, publisher)
 
                 command = ReserveInventoryCommand(
-                    order_id=order_id,
-                    product_id=product_id,
-                    quantity=quantity
+                     order_id=order_id,
+                     product_id=product_id,
+                     quantity=quantity
                 )
 
                 # Process inventory reservation
                 await service.reserve_stock(command)
+
+                # 3. Materialize Reservation locally for CQRS decoupling of compensating transaction
+                logger.info(f"CQRS Materialized State: Persisting reservation locally for Order={order_id}: Product={product_id}, Qty={quantity}")
+                session.add(MaterializedReservationDB(
+                    order_id=order_id,
+                    product_id=product_id,
+                    quantity=quantity
+                ))
                 
-                # Commit any inventory decreases
+                # Commit any inventory decreases and materialized state
                 await session.commit()
-                logger.info(f"Successfully processed inventory transaction for Order: {order_id} under event ID {event_id}")
+                logger.info(f"Successfully processed inventory transaction and materialized reservation for Order: {order_id} under event ID {event_id}")
             except Exception as e:
                 logger.error(f"Error executing asynchronous stock reservation for order {order_id}: {e}", exc_info=True)
                 await session.rollback()
@@ -90,30 +99,6 @@ class ProductMessagingSubscriber:
             logger.error("Missing order_id in PaymentFailed payload. Skipping compensation.")
             return
 
-        from shared.common.http_client import ResilientHTTPClient
-        from src.infrastructure.config import settings
-
-        # 1. Fetch order details from order-service via Resilient HTTP Client to determine product and quantity
-        client = ResilientHTTPClient(timeout=5.0)
-        try:
-            url = f"{settings.ORDER_SERVICE_URL}/{order_id}"
-            logger.info(f"Querying order-service for compensation: GET {url}")
-            response = await client.get(url)
-            response.raise_for_status()
-            order_data = response.json()
-        except Exception as http_err:
-            logger.error(f"Failed to query order-service for Order {order_id} details: {http_err}. Compensation failed.")
-            return
-        finally:
-            await client.close()
-
-        product_id = order_data.get("product_id")
-        quantity = order_data.get("quantity")
-
-        if not product_id or not quantity:
-            logger.error(f"Incomplete order data retrieved for Order {order_id}: {order_data}. Skipping compensation.")
-            return
-
         async with db._session_maker() as session:
             try:
                 # Deduplication Check (Inbox Pattern)
@@ -124,6 +109,41 @@ class ProductMessagingSubscriber:
                         f"Inbox Pattern: Duplicate payment.failed compensation event detected (ID: {event_id}). "
                         f"Skipping to ensure idempotency."
                     )
+                    return
+
+                # 1. Query MaterializedReservationDB locally
+                reservation = await session.get(MaterializedReservationDB, order_id)
+                
+                if reservation:
+                    product_id = reservation.product_id
+                    quantity = reservation.quantity
+                    logger.info(f"CQRS Materialized State: Found reservation details locally for Order={order_id}: Product={product_id}, Qty={quantity}")
+                    # Delete the materialized reservation as it is being compensated/released
+                    await session.delete(reservation)
+                else:
+                    logger.warning(f"CQRS Cache Miss: Materialized reservation not found locally for Order={order_id}. Gracefully falling back to downstream HTTP query...")
+                    # Downstream HTTP query fallback
+                    from shared.common.http_client import ResilientHTTPClient
+                    from src.infrastructure.config import settings
+                    client = ResilientHTTPClient(timeout=5.0)
+                    try:
+                        url = f"{settings.ORDER_SERVICE_URL}/{order_id}"
+                        logger.info(f"Querying order-service for compensation (HTTP Fallback): GET {url}")
+                        response = await client.get(url)
+                        response.raise_for_status()
+                        order_data = response.json()
+                        product_id = order_data.get("product_id")
+                        quantity = order_data.get("quantity")
+                    except Exception as http_err:
+                        logger.error(f"HTTP Fallback Failed: Query to order-service for Order {order_id} failed: {http_err}. Compensation failed.")
+                        # Rollback inbox record in case of failure, so we can retry
+                        await session.rollback()
+                        return
+                    finally:
+                        await client.close()
+
+                if not product_id or not quantity:
+                    logger.error(f"Incomplete order details retrieved for Order {order_id} (Product={product_id}, Qty={quantity}). Skipping compensation.")
                     return
 
                 repo = SQLAlchemyProductRepository(session)

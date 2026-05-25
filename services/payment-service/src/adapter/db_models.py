@@ -9,3 +9,11 @@ class PaymentDB(Base):
     order_id = Column(Integer, nullable=False, unique=True, index=True)
     amount = Column(Float, nullable=False)
     status = Column(String(50), nullable=False, default="PENDING")
+
+class MaterializedOrderDB(Base):
+    """SQLAlchemy model for local materialized orders view (CQRS read model)"""
+    __tablename__ = "materialized_orders"
+
+    order_id = Column(Integer, primary_key=True, index=True)
+    total_price = Column(Float, nullable=False)
+    quantity = Column(Integer, nullable=False, default=1)

@@ -151,9 +151,14 @@ system_design/
 
 ---
 
-## 🔄 4. Asynchronous Event-Driven Saga Pattern
+## 🔄 4. Asynchronous Event-Driven Saga Pattern & CQRS Materialized State
 
-To maintain transactional consistency across our isolated databases without resorting to slow distributed locks or blocking two-phase commits (2PC), we implement an **asynchronous choreographed Saga pattern**:
+To maintain transactional consistency across our isolated databases without resorting to slow distributed locks or blocking two-phase commits (2PC), we implement an **asynchronous choreographed Saga pattern** powered by **CQRS Materialized Local Views**.
+
+### CQRS Temporal Decoupling: Eliminating Sync Service-to-Service Lookups
+In typical choreographed saga microservice architectures, when a consumer receives an event (e.g. `PaymentService` receiving `inventory.reserved`), it often needs context from other domains (e.g. the order's price). Making synchronous HTTP REST requests (e.g. `GET /orders/{id}`) back to the originating service creates **temporal coupling**: if the order service goes down mid-transaction, the entire Saga compensation flow fails.
+
+To solve this, both `payment-service` and `product-service` subscribe to `order.created` events and **materialize the order metadata locally** (read models) under single atomic transactions protected by the **Inbox Pattern**. When the next steps or compensations in the Saga trigger, they query their **local database tables** with **zero HTTP requests**. If a cache miss occurs (e.g. out-of-order Kafka message), they gracefully fall back to a resilient, circuit-breaker-protected HTTP request before failing.
 
 ```mermaid
 sequenceDiagram
@@ -176,22 +181,27 @@ sequenceDiagram
     activate OrderService
     OrderService-->>Client: Stream Push: status: PENDING
 
-    Kafka->>ProductService: Deliver "order.created" Event
-    activate ProductService
-    alt Stock is Available
-        ProductService->>ProductService: Decrement inventory stock in DB
-        ProductService->>Kafka: Publish "inventory.reserved" Event
-        Note over ProductService, Kafka: Inventory Success
-    else Insufficient Stock
-        ProductService->>Kafka: Publish "inventory.failed" Event
-        Note over ProductService, Kafka: Inventory Failure
+    par Parallel Event Deliveries (CQRS Materialization)
+        Kafka->>PaymentService: Deliver "order.created" Event
+        activate PaymentService
+        PaymentService->>PaymentService: Materialize order locally in DB (total_price, qty)
+        deactivate PaymentService
+    and Product Reservation & Materialization
+        Kafka->>ProductService: Deliver "order.created" Event
+        activate ProductService
+        alt Stock is Available
+            ProductService->>ProductService: Decrement stock & save reservation locally in DB
+            ProductService->>Kafka: Publish "inventory.reserved" Event
+        else Insufficient Stock
+            ProductService->>Kafka: Publish "inventory.failed" Event
+        end
+        deactivate ProductService
     end
-    deactivate ProductService
 
     alt Stock Reservation Succeeded
         Kafka->>PaymentService: Deliver "inventory.reserved" Event
         activate PaymentService
-        PaymentService->>OrderService: Resilient GET /orders/{id} (Fetch total price)
+        PaymentService->>PaymentService: Query local DB for materialized order (Zero HTTP calls)
         PaymentService->>PaymentService: Execute simulated gateway transaction
         alt Payment Succeeded (Success Path)
             PaymentService->>Kafka: Publish "payment.succeeded" Event
@@ -206,8 +216,10 @@ sequenceDiagram
                 OrderService-->>Client: Stream Push: status: CANCELLED
             and Saga Stock Restoration
                 Kafka->>ProductService: Deliver "payment.failed" Event
-                ProductService->>OrderService: Resilient GET /orders/{id} (Fetch qty to restore)
-                ProductService->>ProductService: Increment stock (release_stock)
+                activate ProductService
+                ProductService->>ProductService: Query local DB for reservation (Zero HTTP calls)
+                ProductService->>ProductService: Increment stock (release_stock) & delete reservation
+                deactivate ProductService
             end
         end
         deactivate PaymentService

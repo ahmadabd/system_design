@@ -23,3 +23,13 @@ class PaymentRepository(ABC):
     async def find_all(self) -> list[Payment]:
         """Fetch all historical platform payments"""
         pass
+
+    @abstractmethod
+    async def save_materialized_order(self, order_id: int, total_price: float, quantity: int) -> None:
+        """Save/upsert local materialized order details (CQRS view)"""
+        pass
+
+    @abstractmethod
+    async def find_materialized_order(self, order_id: int) -> dict | None:
+        """Find local materialized order details by order ID (CQRS view)"""
+        pass
