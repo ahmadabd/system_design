@@ -86,6 +86,7 @@ class ProductMessagingSubscriber:
             except Exception as e:
                 logger.error(f"Error executing asynchronous stock reservation for order {order_id}: {e}", exc_info=True)
                 await session.rollback()
+                raise e
 
     async def _handle_payment_failed(self, event_data: dict) -> None:
         """Process PaymentFailed event (Saga compensation) and release stock"""
@@ -161,3 +162,4 @@ class ProductMessagingSubscriber:
             except Exception as e:
                 logger.error(f"Error executing stock release compensation for order {order_id}: {e}", exc_info=True)
                 await session.rollback()
+                raise e

@@ -160,11 +160,21 @@ class KafkaManager:
                                 span.set_attribute("messaging.destination", topic)
                                 span.set_attribute("messaging.kafka.consumer_group", group_id)
                                 
-                                # Process the message callback under the active span context
-                                await callback(msg.value)
-                        except Exception as cb_err:
+                                try:
+                                    # Process the message callback under the active span context
+                                    await callback(msg.value)
+                                except Exception as cb_err:
+                                    logger.error(
+                                        f"Error handling message in consumer callback for topic '{topic}': {cb_err}. Dead-lettering...",
+                                        exc_info=True
+                                    )
+                                    span.record_exception(cb_err)
+                                    span.set_status(trace.StatusCode.ERROR, str(cb_err))
+                                    # Route failed event to Dead Letter Queue (DLQ)
+                                    await self._route_to_dlq(topic, group_id, msg.value, cb_err)
+                        except Exception as loop_err:
                             logger.error(
-                                f"Error handling message in consumer callback for topic '{topic}': {cb_err}",
+                                f"Critical consumer loop parsing exception for topic '{topic}': {loop_err}",
                                 exc_info=True
                             )
                 except asyncio.CancelledError:
@@ -191,3 +201,34 @@ class KafkaManager:
         task = asyncio.create_task(consume_loop())
         self.tasks.append(task)
         logger.info(f"Started background subscription consumer on Kafka topic '{topic}' for group '{group_id}'")
+
+    async def _route_to_dlq(self, original_topic: str, consumer_group: str, message_value: Any, exception: Exception) -> None:
+        """Route failed message payload along with diagnostic metadata to the dead-letter queue (DLQ)"""
+        dlq_topic = f"{original_topic}.deadletter"
+        import traceback
+        import datetime
+        
+        # Build enriched diagnostics payload
+        dlq_payload = {
+            "metadata": {
+                "original_topic": original_topic,
+                "consumer_group": consumer_group,
+                "failed_at": datetime.datetime.utcnow().isoformat() + "Z",
+                "error_class": exception.__class__.__name__,
+                "error_message": str(exception),
+                "stack_trace": "".join(traceback.format_exception(type(exception), exception, exception.__traceback__))
+            },
+            "original_payload": message_value
+        }
+        
+        logger.warning(f"DLQ Pipeline: Dead-lettering failed event from topic '{original_topic}' to '{dlq_topic}' due to error: {exception.__class__.__name__}")
+        try:
+            # Publish using standard circuit-breaker-protected publish method
+            await self.publish(
+                exchange_name="ecommerce.events",
+                routing_key=dlq_topic,
+                event_data=dlq_payload
+            )
+            logger.info(f"DLQ Pipeline: Successfully routed failed event to DLQ topic '{dlq_topic}'")
+        except Exception as dlq_err:
+            logger.error(f"DLQ Pipeline Critical Failure: Unable to publish to DLQ topic '{dlq_topic}': {dlq_err}", exc_info=True)

@@ -72,6 +72,7 @@ class PaymentMessagingSubscriber:
             except Exception as e:
                 logger.error(f"Error materializing order details for order {order_id}: {e}", exc_info=True)
                 await session.rollback()
+                raise e
 
     async def _handle_inventory_reserved(self, event_data: dict) -> None:
         """Process stock reservation events and coordinate customer payments"""
@@ -111,3 +112,4 @@ class PaymentMessagingSubscriber:
             except Exception as e:
                 logger.error(f"Error executing asynchronous payment processing for order {order_id}: {e}", exc_info=True)
                 await session.rollback()
+                raise e
