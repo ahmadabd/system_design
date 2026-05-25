@@ -160,6 +160,32 @@ In typical choreographed saga microservice architectures, when a consumer receiv
 
 To solve this, both `payment-service` and `product-service` subscribe to `order.created` events and **materialize the order metadata locally** (read models) under single atomic transactions protected by the **Inbox Pattern**. When the next steps or compensations in the Saga trigger, they query their **local database tables** with **zero HTTP requests**. If a cache miss occurs (e.g. out-of-order Kafka message), they gracefully fall back to a resilient, circuit-breaker-protected HTTP request before failing.
 
+### How Our Implementation Maps to CQRS (Write vs. Read Models)
+
+Our microservice architecture cleanly separates state mutation (Commands) from state querying (Reads) using decentralized read-only projections:
+
+```mermaid
+flowchart TD
+    subgraph Order Context [Order Bounded Context]
+        CMD[1. POST /orders] -->|Write Model| OrderDB[("Order DB: PostgreSQL")]
+        OrderDB -->|Publish Event| Kafka[("Topic: order.created")]
+    end
+
+    subgraph Payment Context [Payment Bounded Context]
+        Kafka -->|Asynchronous Sync| Sub[Kafka Consumer]
+        Sub -->|Write local projection| ReadTable[("materialized_orders Read Model")]
+        
+        InvEvent[Event: inventory.reserved] -->|Consume| PayProc[process_payment]
+        PayProc -->|2. Local DB Query| ReadTable
+    end
+```
+
+1. **The Write Model (Command Side)**: Exclusively managed by `order-service`. Mutating operations (e.g. creating an order) write directly to the `order_db` source of truth.
+2. **The Read Model (Query Side)**: Projections such as `materialized_orders` inside `payment-service` and `materialized_reservations` inside `product-service`. These exist purely to answer local reads fast, without hitting the primary Write database.
+3. **Eventual Consistency**: Kafka events asynchronously synchronize mutations from the Command side to the local Read projections within milliseconds.
+
+### Saga Flow Sequence Diagram
+
 ```mermaid
 sequenceDiagram
     autonumber
