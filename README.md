@@ -22,6 +22,7 @@ graph TD
         Router -->|"/products/*"| ProdServ["product-service:8002"]
         Router -->|"/orders/*"| OrdServ["order-service:8003"]
         Router -->|"/payments/*"| PayServ["payment-service:8004"]
+        Router -->|"/reporting/*"| RepServ["reporting-service:8005"]
     end
 
     subgraph DataCaching ["Data & Caching Tier"]
@@ -29,8 +30,9 @@ graph TD
         ProdServ -->|"db_breaker"| ProdDB[("product_db: PostgreSQL")]
         OrdServ -->|"db_breaker"| OrdDB[("order_db: PostgreSQL")]
         PayServ -->|"db_breaker"| PayDB[("payment_db: PostgreSQL")]
+        RepServ -->|"db_breaker"| RepDB[("reporting_db: PostgreSQL")]
         
-        UserServ & ProdServ & OrdServ & PayServ -->|"Idempotency Cache"| Redis[("redis: Redis 7")]
+        UserServ & ProdServ & OrdServ & PayServ & RepServ -->|"Idempotency Cache"| Redis[("redis: Redis 7")]
     end
 
     subgraph EventBroker ["Asynchronous Event Broker"]
@@ -38,11 +40,13 @@ graph TD
         ProdServ -.->|"kafka_breaker"| Kafka
         OrdServ -.->|"kafka_breaker"| Kafka
         PayServ -.->|"kafka_breaker"| Kafka
+        RepServ -.->|"kafka_breaker"| Kafka
         
         Kafka -.->|"Event Subscription / Inbox Pattern"| UserServ
         Kafka -.->|"Event Subscription / Inbox Pattern"| ProdServ
         Kafka -.->|"Event Subscription / Inbox Pattern"| OrdServ
         Kafka -.->|"Event Subscription / Inbox Pattern"| PayServ
+        Kafka -.->|"Event Subscription / Inbox Pattern"| RepServ
     end
 
     subgraph Observability ["Distributed Observability Stack"]
@@ -142,7 +146,11 @@ system_design/
 │   │   ├── Dockerfile
 │   │   ├── requirements.txt
 │   │   └── src/
-│   └── payment-service/
+│   ├── payment-service/
+│   │   ├── Dockerfile
+│   │   ├── requirements.txt
+│   │   └── src/
+│   └── reporting-service/
 │       ├── Dockerfile
 │       ├── requirements.txt
 │       └── src/
@@ -177,6 +185,13 @@ flowchart TD
         
         InvEvent[Event: inventory.reserved] -->|Consume| PayProc[process_payment]
         PayProc -->|2. Local DB Query| ReadTable
+    end
+
+    subgraph Reporting Context [Reporting Bounded Context]
+        Kafka -->|Asynchronous Sync| RepSub[Kafka Consumer]
+        RepSub -->|Write Materialized Views| RepTable[("Profiles, Orders, & Payments Read Model")]
+        
+        QueryCMD[3. GET /reporting/customers/.../dashboard] -->|Read Model Query| RepTable
     end
 ```
 
@@ -296,6 +311,7 @@ Fill in the custom database credentials, port configurations, and Redis credenti
 | **Product Service OpenAPI Docs**| `8002` | `http://localhost/products/docs` or `http://localhost:8002/docs` |
 | **Order Service OpenAPI Docs** | `8003` | `http://localhost/orders/docs` or `http://localhost:8003/docs` |
 | **Payment Service OpenAPI Docs**| `8004` | `http://localhost/payments/docs` or `http://localhost:8004/docs` |
+| **Reporting Service OpenAPI Docs**| `8005` | `http://localhost/reporting/docs` or `http://localhost:8005/docs` |
 | **Jaeger Distributed Tracing** | `16686` | `http://localhost:16686/` |
 | **Grafana Telemetry Dashboard**| `3000` | `http://localhost:3000/` |
 | **Prometheus Metrics Engine** | `9090` | `http://localhost:9090/` |
@@ -561,6 +577,12 @@ All service interactions are routed through the Traefik Gateway on port `80`.
 * **Retrieve Payment by Order ID**:
   ```bash
   curl -i http://localhost/payments/1
+  ```
+
+##### 5. Reporting Bounded Context (CQRS Customer Dashboard)
+* **Retrieve Consolidated Customer Report**:
+  ```bash
+  curl -s http://localhost/reporting/customers/1/dashboard
   ```
 
 ---

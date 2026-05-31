@@ -95,6 +95,20 @@ services:
     networks:
       - ecommerce-network
 
+  reporting-db:
+    image: postgres:17-alpine
+    container_name: reporting-db
+    ports:
+      - "${REPORTING_DB_HOST_PORT:-5436}:5432"
+    environment:
+      - POSTGRES_DB=${REPORTING_DB_NAME:-reporting_db}
+      - POSTGRES_USER=${REPORTING_DB_USER:-postgres}
+      - POSTGRES_PASSWORD=${REPORTING_DB_PASSWORD:-postgres_password}
+    volumes:
+      - reporting_db_data:/var/lib/postgresql/data
+    networks:
+      - ecommerce-network
+
 
   user-service:
     build:
@@ -181,6 +195,27 @@ services:
     networks:
       - ecommerce-network
 
+  reporting-service:
+    build:
+      context: .
+      dockerfile: services/reporting-service/Dockerfile
+    container_name: reporting-service
+    ports:
+      - "${REPORTING_SERVICE_PORT:-8005}:${REPORTING_SERVICE_PORT:-8005}"
+    environment:
+      - PORT=${REPORTING_SERVICE_PORT:-8005}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - DATABASE_URL=postgresql+asyncpg://${REPORTING_DB_USER:-postgres}:${REPORTING_DB_PASSWORD:-postgres_password}@reporting-db:5432/${REPORTING_DB_NAME:-reporting_db}
+      - KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS:-kafka:29092}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+      - SERVICE_NAME=reporting-service
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-sys_design_secure_cache_pass_2026}@redis:${REDIS_PORT:-6379}
+    depends_on:
+      - reporting-db
+      - kafka
+    networks:
+      - ecommerce-network
+
   traefik-master:
     image: traefik:v3.7
     container_name: traefik-master
@@ -197,6 +232,7 @@ services:
       - product-service
       - order-service
       - payment-service
+      - reporting-service
 
   traefik-backup:
     image: traefik:v3.7
@@ -212,6 +248,7 @@ services:
       - product-service
       - order-service
       - payment-service
+      - reporting-service
 
   keepalived-master:
     image: osixia/keepalived:latest
@@ -265,5 +302,6 @@ volumes:
   redis_data:
   kafka_data:
   payment_db_data:
+  reporting_db_data:
 
 

@@ -40,6 +40,16 @@ http:
         - "strip-payments"
       service: payment-service
 
+    reporting-router:
+      rule: "PathPrefix(`/reporting`)"
+      entryPoints:
+        - web
+      middlewares:
+        - "rate-limit"
+        - "load-shedding"
+        - "strip-reporting"
+      service: reporting-service
+
 
   middlewares:
     load-shedding:
@@ -76,6 +86,11 @@ http:
       stripPrefix:
         prefixes:
           - "/payments"
+
+    strip-reporting:
+      stripPrefix:
+        prefixes:
+          - "/reporting"
 
 
   services:
@@ -114,3 +129,12 @@ http:
           timeout: 1s
         servers:
           - url: "http://payment-service:8004"
+
+    reporting-service:
+      loadBalancer:
+        healthCheck:
+          path: /health
+          interval: 2s
+          timeout: 1s
+        servers:
+          - url: "http://reporting-service:8005"
