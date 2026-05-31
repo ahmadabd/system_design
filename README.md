@@ -209,6 +209,7 @@ sequenceDiagram
     participant Kafka as Apache Kafka Broker
     participant ProductService as Product Service
     participant PaymentService as Payment Service
+    participant ReportingService as Reporting Service
 
     Client->>OrderService: POST /orders
     activate OrderService
@@ -237,6 +238,11 @@ sequenceDiagram
             ProductService->>Kafka: Publish "inventory.failed" Event
         end
         deactivate ProductService
+    and Reporting Service Materialization
+        Kafka->>ReportingService: Deliver "order.created" Event
+        activate ReportingService
+        ReportingService->>ReportingService: Materialize order locally in DB (status: PENDING)
+        deactivate ReportingService
     end
 
     alt Stock Reservation Succeeded
@@ -246,9 +252,16 @@ sequenceDiagram
         PaymentService->>PaymentService: Execute simulated gateway transaction
         alt Payment Succeeded (Success Path)
             PaymentService->>Kafka: Publish "payment.succeeded" Event
-            Kafka->>OrderService: Deliver "payment.succeeded" Event
-            OrderService->>OrderService: Update Order (status: CONFIRMED)
-            OrderService-->>Client: Stream Push: status: CONFIRMED
+            par Saga Success Action
+                Kafka->>OrderService: Deliver "payment.succeeded" Event
+                OrderService->>OrderService: Update Order (status: CONFIRMED)
+                OrderService-->>Client: Stream Push: status: CONFIRMED
+            and Reporting Service Success Capture
+                Kafka->>ReportingService: Deliver "payment.succeeded" Event
+                activate ReportingService
+                ReportingService->>ReportingService: Materialize Payment & Update Order status to CONFIRMED
+                deactivate ReportingService
+            end
         else Payment Failed (Compensating Saga Rollback)
             PaymentService->>Kafka: Publish "payment.failed" Event
             par Saga Compensating Action
@@ -261,6 +274,11 @@ sequenceDiagram
                 ProductService->>ProductService: Query local DB for reservation (Zero HTTP calls)
                 ProductService->>ProductService: Increment stock (release_stock) & delete reservation
                 deactivate ProductService
+            and Reporting Service Failure Capture
+                Kafka->>ReportingService: Deliver "payment.failed" Event
+                activate ReportingService
+                ReportingService->>ReportingService: Materialize Payment failure & Update Order status to CANCELLED
+                deactivate ReportingService
             end
         end
         deactivate PaymentService
@@ -270,6 +288,11 @@ sequenceDiagram
         OrderService->>OrderService: Update Order (status: CANCELLED)
         OrderService-->>Client: Stream Push: status: CANCELLED
         deactivate OrderService
+        
+        Kafka->>ReportingService: Deliver "inventory.failed" Event
+        activate ReportingService
+        ReportingService->>ReportingService: Update local Order status to CANCELLED
+        deactivate ReportingService
     end
     
     OrderService--xClient: Close SSE Stream Connection
