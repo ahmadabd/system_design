@@ -50,7 +50,7 @@ graph TD
     end
 
     subgraph Observability ["Distributed Observability Stack"]
-        UserServ & ProdServ & OrdServ & PayServ & Traefik -->|"OTel Traces & Metrics"| OTel["OTel Collector:4317"]
+        UserServ & ProdServ & OrdServ & PayServ & RepServ & Traefik -->|"OTel Traces & Metrics"| OTel["OTel Collector:4317"]
         OTel -->|"Traces"| JG["Jaeger UI:16686"]
         OTel -->|"Metrics"| PR["Prometheus:9090"]
         OTel -->|"Logs"| LK["Loki:3100"]
@@ -292,7 +292,7 @@ Fill in the custom database credentials, port configurations, and Redis credenti
    ```bash
    docker compose up --build -d
    ```
-   This spins up the three microservices, their autonomous databases, Traefik, Keepalived high-availability instances, Redis cache, and the Kafka broker in KRaft mode.
+   This spins up the five microservices, their autonomous databases, Traefik, Keepalived high-availability instances, Redis cache, and the Kafka broker in KRaft mode.
 
 2. **Launch the telemetry stack**:
    ```bash
