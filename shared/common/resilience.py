@@ -4,6 +4,17 @@ import logging
 from functools import wraps
 from typing import Callable, Any
 
+try:
+    from prometheus_client import Gauge
+    # Gauge metric tracking circuit state: 0 = CLOSED, 1 = OPEN, 2 = HALF-OPEN
+    circuit_breaker_state_gauge = Gauge(
+        "circuit_breaker_state",
+        "State of active circuit breakers (0=CLOSED, 1=OPEN, 2=HALF-OPEN)",
+        ["name"]
+    )
+except ImportError:
+    circuit_breaker_state_gauge = None
+
 logger = logging.getLogger("Resilience")
 
 class CircuitBreakerOpenException(Exception):
@@ -28,6 +39,10 @@ class AsyncCircuitBreaker:
         self.failure_count = 0
         self.last_state_change = 0.0
         self._lock = asyncio.Lock()
+
+        # Initialize metric value to CLOSED
+        if circuit_breaker_state_gauge:
+            circuit_breaker_state_gauge.labels(name=self.name).set(0)
 
     def decorator(self) -> Callable[..., Any]:
         """Returns a decorator that wraps async functions inside the circuit breaker"""
@@ -63,6 +78,8 @@ class AsyncCircuitBreaker:
                 if elapsed >= self.recovery_timeout:
                     self.state = "HALF-OPEN"
                     self.last_state_change = time.time()
+                    if circuit_breaker_state_gauge:
+                        circuit_breaker_state_gauge.labels(name=self.name).set(2)
                     logger.warning(
                         f"Circuit Breaker '{self.name}' shifted from OPEN to HALF-OPEN. Probing target service..."
                     )
@@ -73,6 +90,8 @@ class AsyncCircuitBreaker:
                 self.state = "CLOSED"
                 self.failure_count = 0
                 self.last_state_change = time.time()
+                if circuit_breaker_state_gauge:
+                    circuit_breaker_state_gauge.labels(name=self.name).set(0)
                 logger.info(
                     f"Circuit Breaker '{self.name}' probe succeeded! Circuit reset to CLOSED."
                 )
@@ -89,7 +108,10 @@ class AsyncCircuitBreaker:
             if self.state == "HALF-OPEN" or self.failure_count >= self.failure_threshold:
                 self.state = "OPEN"
                 self.last_state_change = time.time()
+                if circuit_breaker_state_gauge:
+                    circuit_breaker_state_gauge.labels(name=self.name).set(1)
                 logger.error(
                     f"Circuit Breaker '{self.name}' tripped to OPEN state! "
                     f"Blocking requests for the next {self.recovery_timeout} seconds."
                 )
+

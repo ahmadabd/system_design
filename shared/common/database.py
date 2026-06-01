@@ -5,10 +5,34 @@ from sqlalchemy.ext.asyncio import (
     AsyncSession,
     AsyncEngine
 )
-from sqlalchemy.orm import declarative_base
+from sqlalchemy import text, event
+import time
 from shared.common.resilience import AsyncCircuitBreaker, CircuitBreakerOpenException
 
+try:
+    from prometheus_client import Histogram, Gauge
+    db_query_duration = Histogram(
+        "db_query_duration_seconds",
+        "Time spent executing DB queries",
+        ["db_name"]
+    )
+    postgresql_connections = Gauge(
+        "postgresql_connections",
+        "Number of active PostgreSQL connections in the pool",
+        ["db", "state"]
+    )
+    postgresql_connections_max = Gauge(
+        "postgresql_connections_max",
+        "Maximum size of the PostgreSQL connection pool",
+        ["db"]
+    )
+except ImportError:
+    db_query_duration = None
+    postgresql_connections = None
+    postgresql_connections_max = None
+
 # Shared declarative base for all ORM models across services
+from sqlalchemy.orm import declarative_base
 Base = declarative_base()
 
 class Database:
@@ -33,6 +57,19 @@ class Database:
             failure_threshold=5,
             recovery_timeout=15.0
         )
+
+        # Register transparent query execution listeners to record query latencies
+        if db_query_duration:
+            @event.listens_for(self._engine.sync_engine, "before_cursor_execute")
+            def before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+                context._query_start_time = time.perf_counter()
+
+            @event.listens_for(self._engine.sync_engine, "after_cursor_execute")
+            def after_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+                if hasattr(context, "_query_start_time"):
+                    total_time = time.perf_counter() - context._query_start_time
+                    db_name = conn.engine.url.database or "unknown"
+                    db_query_duration.labels(db_name=db_name).observe(total_time)
 
     async def close(self) -> None:
         """Safely dispose of connection pools"""
@@ -75,6 +112,17 @@ class Database:
                     "Database circuit breaker is OPEN. Fast-failing database transaction request."
                 )
 
+        # Update connection pool metrics before session starts
+        db_name = self._engine.url.database or "unknown"
+        if postgresql_connections:
+            # Active (checked out) connections
+            postgresql_connections.labels(db=db_name, state="active").set(self._engine.pool.checkedout())
+            # Idle (checked in) connections
+            postgresql_connections.labels(db=db_name, state="idle").set(self._engine.pool.checkedin())
+        if postgresql_connections_max:
+            # Max pool size
+            postgresql_connections_max.labels(db=db_name).set(self._engine.pool.size())
+
         async with self._session_maker() as session:
             try:
                 yield session
@@ -88,4 +136,5 @@ class Database:
                 raise e
             finally:
                 await session.close()
+
 

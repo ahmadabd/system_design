@@ -1,9 +1,26 @@
 import asyncio
 import json
 import logging
+import time
 from typing import Callable, Any, Coroutine, List
 from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
 from shared.common.resilience import AsyncCircuitBreaker
+
+try:
+    from prometheus_client import Counter, Histogram
+    messaging_kafka_messages_total = Counter(
+        "messaging_kafka_messages_total",
+        "Total number of Kafka messages sent or received",
+        ["topic", "operation"]
+    )
+    messaging_process_duration_seconds = Histogram(
+        "messaging_process_duration_seconds",
+        "Time spent executing message callbacks",
+        ["topic"]
+    )
+except ImportError:
+    messaging_kafka_messages_total = None
+    messaging_process_duration_seconds = None
 
 logger = logging.getLogger("KafkaManager")
 
@@ -94,6 +111,8 @@ class KafkaManager:
                 ]
                 
                 await self.producer.send_and_wait(topic, value=event_data, key=key, headers=kafka_headers)
+                if messaging_kafka_messages_total:
+                    messaging_kafka_messages_total.labels(topic=topic, operation="send").inc()
                 logger.info(f"Published message to Kafka topic '{topic}' with key '{key.decode() if key else 'None'}'")
 
         await self.kafka_breaker.call(_do_publish)
@@ -162,7 +181,14 @@ class KafkaManager:
                                 
                                 try:
                                     # Process the message callback under the active span context
+                                    start_time = time.perf_counter()
                                     await callback(msg.value)
+                                    duration = time.perf_counter() - start_time
+                                    
+                                    if messaging_kafka_messages_total:
+                                        messaging_kafka_messages_total.labels(topic=topic, operation="receive").inc()
+                                    if messaging_process_duration_seconds:
+                                        messaging_process_duration_seconds.labels(topic=topic).observe(duration)
                                 except Exception as cb_err:
                                     logger.error(
                                         f"Error handling message in consumer callback for topic '{topic}': {cb_err}. Dead-lettering...",

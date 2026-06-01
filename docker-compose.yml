@@ -287,6 +287,30 @@ services:
     networks:
       - ecommerce-network
 
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: redis-exporter
+    environment:
+      - REDIS_ADDR=redis:${REDIS_PORT:-6380}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-sys_design_secure_cache_pass_2026}
+    ports:
+      - "9121:9121"
+    networks:
+      - ecommerce-network
+    depends_on:
+      - redis
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:latest
+    container_name: kafka-exporter
+    command: --kafka.server=kafka:29092
+    ports:
+      - "9308:9308"
+    networks:
+      - ecommerce-network
+    depends_on:
+      - kafka
+
 networks:
   ecommerce-network:
     name: ecommerce-network
