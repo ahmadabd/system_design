@@ -47,3 +47,32 @@ groups:
         annotations:
           summary: "Abnormal Traffic Volume on {{ $labels.instance }}"
           description: "Traffic volume is over 100 req/s, possible DDoS or scraping."
+
+      # --- Resilience Alerts ---
+
+      - alert: DatabaseCircuitBreakerOpen
+        expr: circuit_breaker_state{name="postgres-database"} == 1
+        for: 0s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Database Circuit Breaker OPEN on {{ $labels.instance }}"
+          description: "The database connection circuit breaker for service {{ $labels.instance }} has tripped to OPEN due to consecutive failures. Downstream writes will fail-fast."
+
+      - alert: OutboxBacklogSpike
+        expr: outbox_backlog_size > 50
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Outbox Backlog Accumulation on {{ $labels.service_name }}"
+          description: "Outbox backlog size for {{ $labels.service_name }} has exceeded 50 pending events for 2 minutes. Integration events may be delayed."
+
+      - alert: DeadLetterQueueRouted
+        expr: sum(rate(messaging_dlq_routed_total[5m])) by (original_topic) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Events routing to Dead Letter Queue for {{ $labels.original_topic }}"
+          description: "Consumer processing has failed repeatedly, causing events to route to DLQ topic '{{ $labels.original_topic }}.deadletter'."
