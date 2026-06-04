@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy import text, event
 import time
 from shared.common.resilience import AsyncCircuitBreaker, CircuitBreakerOpenException
+from fastapi import Request
 
 try:
     from prometheus_client import Histogram, Gauge
@@ -105,10 +106,14 @@ class Database:
                     )
                 await asyncio.sleep(delay)
 
-    async def get_session(self) -> AsyncGenerator[AsyncSession, None]:
+    async def get_session(self, request: Request = None) -> AsyncGenerator[AsyncSession, None]:
         """Dependency generator to retrieve DB sessions with automatic cleanup and circuit breaker wrapping"""
-        # Fast-fail if the circuit breaker is OPEN
-        if self.db_breaker.state == "OPEN":
+        is_write = True
+        if request and request.method == "GET":
+            is_write = False
+
+        # Fast-fail if the circuit breaker is OPEN (only for write operations)
+        if is_write and self.db_breaker.state == "OPEN":
             await self.db_breaker._before_call()
             if self.db_breaker.state == "OPEN":
                 raise CircuitBreakerOpenException(

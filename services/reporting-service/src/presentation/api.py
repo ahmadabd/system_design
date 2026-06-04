@@ -1,14 +1,22 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from src.infrastructure.db_setup import db
+from src.infrastructure.config import settings
 from src.adapter.db_models import ReportingProfileDB, ReportingOrderDB, ReportingPaymentDB
+from shared.common.idempotency import IdempotencyManager
+from shared.common.cache import cache_fallback
 
 router = APIRouter(prefix="", tags=["Reporting"])
 
+# Establish Redis Idempotency/Cache Manager
+idempotency_manager = IdempotencyManager(settings.REDIS_URL)
+
 @router.get("/customers/{user_id:int}/dashboard", status_code=status.HTTP_200_OK)
+@cache_fallback(idempotency_manager, db.db_breaker, key_prefix="dashboard", id_param="user_id")
 async def get_customer_dashboard(
     user_id: int,
+    request: Request,
     session: AsyncSession = Depends(db.get_session)
 ):
     """

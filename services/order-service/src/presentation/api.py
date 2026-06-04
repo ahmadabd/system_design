@@ -13,6 +13,7 @@ from shared.common.messaging import KafkaManager
 from shared.common.idempotency import IdempotencyManager, idempotent_api
 from shared.common.resilience import CircuitBreakerOpenException
 from shared.common.http_client import ResilientHTTPClient
+from shared.common.cache import cache_fallback
 
 router = APIRouter(prefix="", tags=["Orders"])
 
@@ -76,8 +77,10 @@ async def list_orders(
         )
 
 @router.get("/{order_id:int}", response_model=OrderDTO)
+@cache_fallback(idempotency_manager, db.db_breaker, key_prefix="order", id_param="order_id")
 async def get_order(
     order_id: int,
+    request: Request,
     service: OrderApplicationService = Depends(get_order_service)
 ):
     """REST endpoint to fetch order details by identity ID"""

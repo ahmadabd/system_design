@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.infrastructure.db_setup import db
 from src.infrastructure.config import settings
@@ -7,12 +7,17 @@ from src.adapter.messaging_pub import PaymentMessagingPublisher
 from src.application.payment_service import PaymentApplicationService
 from shared.common.messaging import KafkaManager
 from shared.common.resilience import CircuitBreakerOpenException
+from shared.common.idempotency import IdempotencyManager
+from shared.common.cache import cache_fallback
 from pydantic import BaseModel
 
 router = APIRouter(prefix="", tags=["Payments"])
 
 # Establish broker manager for outbound events
 mq_manager = KafkaManager(settings.KAFKA_BOOTSTRAP_SERVERS)
+
+# Establish Redis Idempotency/Cache Manager
+idempotency_manager = IdempotencyManager(settings.REDIS_URL)
 
 class PaymentDTO(BaseModel):
     id: str | None
@@ -46,8 +51,10 @@ async def list_payments(
         )
 
 @router.get("/{order_id:int}", response_model=PaymentDTO)
+@cache_fallback(idempotency_manager, db.db_breaker, key_prefix="payment", id_param="order_id")
 async def get_payment_by_order_id(
     order_id: int,
+    request: Request,
     service: PaymentApplicationService = Depends(get_payment_service)
 ):
     """REST endpoint to fetch payment details by order ID reference"""

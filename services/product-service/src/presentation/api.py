@@ -11,6 +11,7 @@ from src.presentation.schemas import CreateProductRequest
 from shared.common.messaging import KafkaManager
 from shared.common.idempotency import IdempotencyManager, idempotent_api
 from shared.common.resilience import CircuitBreakerOpenException
+from shared.common.cache import cache_fallback
 
 router = APIRouter(prefix="", tags=["Products"])
 
@@ -68,8 +69,10 @@ async def list_products(
         )
 
 @router.get("/{product_id:int}", response_model=ProductDTO)
+@cache_fallback(idempotency_manager, db.db_breaker, key_prefix="product", id_param="product_id")
 async def get_product(
     product_id: int,
+    request: Request,
     service: ProductApplicationService = Depends(get_product_service)
 ):
     """REST endpoint to fetch product details by identity ID"""

@@ -11,6 +11,7 @@ from src.presentation.schemas import RegisterUserRequest
 from shared.common.messaging import KafkaManager
 from shared.common.idempotency import IdempotencyManager, idempotent_api
 from shared.common.resilience import CircuitBreakerOpenException
+from shared.common.cache import cache_fallback
 
 router = APIRouter(prefix="", tags=["Users"])
 
@@ -55,8 +56,10 @@ async def register(
         )
 
 @router.get("/{user_id:int}", response_model=UserDTO)
+@cache_fallback(idempotency_manager, db.db_breaker, key_prefix="user", id_param="user_id")
 async def get_user(
     user_id: int,
+    request: Request,
     service: UserApplicationService = Depends(get_user_service)
 ):
     """REST endpoint to fetch user details by identity ID"""
