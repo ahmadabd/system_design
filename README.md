@@ -547,9 +547,51 @@ locust
 And navigate to `http://localhost:8089` to specify target users, ramp-up rates, and view live response-time and error graphs.
 
 
+### 7. Asynchronous Consumer Retries & Dead Letter Queue (DLQ) Replay Demo
+
+Simulate an asynchronous consumer processing failure (e.g. database down during saga event handling) and verify self-healing recovery:
+
+1. **Stop Downstream Database**:
+   ```bash
+   docker compose stop product-db
+   ```
+2. **Submit Order Request** (Ensuring target product 6 is cached in Redis):
+   ```bash
+   curl -i -X POST http://localhost/orders \
+     -H "Content-Type: application/json" \
+     -H "X-Idempotency-Key: dlq-demo-key-1" \
+     -d '{"user_id": 273, "product_id": 6, "quantity": 1, "total_price": 100.00}'
+   ```
+   *Note: Because `product-service` has cached product #6 in Redis, `order-service`'s client-side cache fallback allows it to verify the product, create the order, and write it to the outbox table. The REST API immediately responds with `201 Created` and status `PENDING`.*
+3. **Verify Retries & DLQ Routing**:
+   * Inspect the `product-service` logs to watch the consumer retry loop:
+     ```bash
+     docker logs product-service 2>&1 | grep -E "Transient|DLQ"
+     ```
+     You will observe the callback fail with name resolution errors, retry 3 times with exponential backoff, route the event to `order.created.deadletter`, and commit the partition offset.
+4. **Inspect Grafana Dashboard**:
+   * Open Grafana (`http://localhost:3000`) and view the **"Transactional Outbox & Read Resiliency"** dashboard.
+   * Under the **"Consumer Retries & Dead Letter Queues (DLQ)"** row, you will see a spike in the **Unreplayed DLQ Backlog (Messages)** panel showing `1` message in the queue.
+5. **Restore System**:
+   ```bash
+   docker compose start product-db
+   ```
+6. **Trigger DLQ Replay Utility**:
+   * Execute the replay CLI command to drain and republish dead-lettered events:
+     ```bash
+     docker exec order-service python /app/shared/bin/replay_dlq.py
+     ```
+     The tool will scan `.deadletter` topics, republish the message back to `order.created`, and commit its DLQ offset.
+7. **Verify Saga Completion**:
+   * Query the order status to verify it has self-healed and transitioned to `CONFIRMED`:
+     ```bash
+     curl -i http://localhost/orders/75
+     ```
+   * On the Grafana dashboard, the **Unreplayed DLQ Backlog** metrics will immediately drop back down to `0`.
+
 ---
 
-### 7. Real-Time Kafka Inspection & Complete Service API Reference
+### 8. Real-Time Kafka Inspection & Complete Service API Reference
 
 To make integration verification and debugging seamless, this section provides a complete reference of all microservice endpoints (accessible via the Traefik API Gateway) and the exact commands to monitor asynchronous event flows in Kafka in real time.
 
@@ -696,7 +738,7 @@ Use `kafka-console-consumer` to listen to events in real time. Open a separate t
 
 ---
 
-## 📝 8. Stand-Alone System Design Algorithms (For Learning)
+## 📝 9. Stand-Alone System Design Algorithms (For Learning)
 
 To explore core traffic shaping and resilience algorithms in pure, stand-alone Python (completely decoupled from the running microservices), navigate to the `algorithms/` folder:
 
