@@ -60,7 +60,7 @@ class ProductMessagingSubscriber:
 
                 # 2. Proceed with domain command execution
                 repo = SQLAlchemyProductRepository(session)
-                publisher = ProductMessagingPublisher(self.mq_manager)
+                publisher = ProductMessagingPublisher(session)
                 service = ProductApplicationService(repo, publisher)
 
                 command = ReserveInventoryCommand(

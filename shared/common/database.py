@@ -143,3 +143,18 @@ class Database:
                 await session.close()
 
 
+from sqlalchemy import Column, Integer, String, JSON, DateTime, Boolean
+from datetime import datetime
+
+class OutboxMessage(Base):
+    """ORM representation of a message to be published to Kafka resiliently"""
+    __tablename__ = "outbox_messages"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    topic = Column(String(255), nullable=False)
+    payload = Column(JSON, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    processed = Column(Boolean, default=False)
+
+
+

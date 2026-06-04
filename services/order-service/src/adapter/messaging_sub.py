@@ -78,7 +78,7 @@ class OrderMessagingSubscriber:
 
                 # 2. Proceed with domain command execution
                 repo = SQLAlchemyOrderRepository(session)
-                publisher = OrderMessagingPublisher(self.mq_manager)
+                publisher = OrderMessagingPublisher(session)
                 service = OrderApplicationService(repo, publisher)
 
                 command = CancelOrderCommand(order_id=order_id, reason=reason)
@@ -113,7 +113,7 @@ class OrderMessagingSubscriber:
 
                 # 2. Proceed with domain command execution
                 repo = SQLAlchemyOrderRepository(session)
-                publisher = OrderMessagingPublisher(self.mq_manager)
+                publisher = OrderMessagingPublisher(session)
                 service = OrderApplicationService(repo, publisher)
 
                 command = ConfirmOrderCommand(order_id=order_id)
@@ -149,7 +149,7 @@ class OrderMessagingSubscriber:
 
                 # 2. Proceed with domain command execution
                 repo = SQLAlchemyOrderRepository(session)
-                publisher = OrderMessagingPublisher(self.mq_manager)
+                publisher = OrderMessagingPublisher(session)
                 service = OrderApplicationService(repo, publisher)
 
                 command = CancelOrderCommand(order_id=order_id, reason=reason)

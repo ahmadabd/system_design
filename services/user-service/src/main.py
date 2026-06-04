@@ -7,8 +7,12 @@ from shared.common.observability import setup_observability, register_graceful_s
 from src.infrastructure.config import settings
 from src.infrastructure.db_setup import db
 from src.presentation.api import router, mq_manager
+from shared.common.outbox import OutboxPublisher
 
 logger = logging.getLogger("UserApplication")
+
+# Initialize outbox publisher background worker
+outbox_publisher = OutboxPublisher(db, mq_manager)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -28,9 +32,13 @@ async def lifespan(app: FastAPI):
         """))
     logger.info("Idempotent consumers table initialized successfully.")
     
+    # Start Outbox Publisher background worker
+    outbox_publisher.start()
+    
     yield
     
     logger.info("Tearing down User Service resources in lifespan context...")
+    await outbox_publisher.stop()
     await db.close()
     await mq_manager.close()
     logger.info("User Service teardown complete.")
@@ -60,7 +68,7 @@ setup_observability(app, settings.SERVICE_NAME)
 # Register cooperative graceful SIGTERM/SIGINT shutdown with 3s traffic draining
 register_graceful_shutdown(
     app, 
-    [db.close, mq_manager.close]
+    [outbox_publisher.stop, db.close, mq_manager.close]
 )
 
 @app.get("/health", tags=["System"])

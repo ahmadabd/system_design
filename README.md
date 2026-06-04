@@ -84,8 +84,12 @@ Implemented via a custom async-native `AsyncCircuitBreaker` wrapper (`shared/com
 
 ### D. Asynchronous Event Consumer Idempotency (Inbox Pattern)
 - Event-driven platforms are susceptible to duplicate events due to broker partition rebalancing or network retries.
-- We enforce the **Inbox Pattern** at the database layer. A persistent SQL table `idempotent_consumers` tracks every processed event ID.
 - Consumers verify and record event IDs in a single atomic transaction. Duplicate events are silently discarded, guaranteeing that stock levels and order statuses are updated exactly once.
+
+### E. Transactional Outbox Pattern (Event-Publishing Resilience)
+- **The Issue**: In standard event-driven systems, writing to the database and publishing to Kafka are separate operations. If Kafka goes down or a network timeout occurs right after the database transaction commits, the event is lost. Conversely, if you publish the event first and the DB commit fails, you dispatch a "ghost" event.
+- **The Solution**: We implement the **Transactional Outbox Pattern**. When a service updates its database (e.g., creating an order or reserving stock), it writes the event payload into a local `outbox_messages` table within the **same atomic database transaction**.
+- **Self-Healing & Decoupled Uptime**: A background `OutboxPublisher` task continuously polls the local database table, publishes pending messages to Kafka, and deletes them upon success. If Kafka goes down (tripping the `kafka_breaker`), the API write still succeeds instantly, buffering the messages in PostgreSQL. Once Kafka recovers, the background publisher drains the queue automatically.
 
 ---
 
@@ -213,10 +217,10 @@ sequenceDiagram
 
     Client->>OrderService: POST /orders
     activate OrderService
-    OrderService->>OrderService: Save Order (status: PENDING)
-    OrderService->>Kafka: Publish "order.created" Event
+    OrderService->>OrderService: Write Order & Outbox Message (Atomic DB Transaction)
     OrderService-->>Client: Returns Order DTO (PENDING)
     deactivate OrderService
+    OrderService->>Kafka: Outbox Publisher dispatches "order.created" Event
 
     Note over Client, OrderService: Client establishes SSE connection (GET /orders/{id}/status-stream)
     Client->>OrderService: Establish SSE Stream Connection
@@ -232,10 +236,11 @@ sequenceDiagram
         Kafka->>ProductService: Deliver "order.created" Event
         activate ProductService
         alt Stock is Available
-            ProductService->>ProductService: Decrement stock & save reservation locally in DB
-            ProductService->>Kafka: Publish "inventory.reserved" Event
+            ProductService->>ProductService: Decrement stock, save reservation & Outbox (Atomic DB Transaction)
+            ProductService->>Kafka: Outbox Publisher dispatches "inventory.reserved" Event
         else Insufficient Stock
-            ProductService->>Kafka: Publish "inventory.failed" Event
+            ProductService->>ProductService: Write Outbox Message (Atomic DB Transaction)
+            ProductService->>Kafka: Outbox Publisher dispatches "inventory.failed" Event
         end
         deactivate ProductService
     and Reporting Service Materialization
@@ -251,7 +256,8 @@ sequenceDiagram
         PaymentService->>PaymentService: Query local DB for materialized order (Zero HTTP calls)
         PaymentService->>PaymentService: Execute simulated gateway transaction
         alt Payment Succeeded (Success Path)
-            PaymentService->>Kafka: Publish "payment.succeeded" Event
+            PaymentService->>PaymentService: Save Payment & Outbox Message (Atomic DB Transaction)
+            PaymentService->>Kafka: Outbox Publisher dispatches "payment.succeeded" Event
             par Saga Success Action
                 Kafka->>OrderService: Deliver "payment.succeeded" Event
                 OrderService->>OrderService: Update Order (status: CONFIRMED)
@@ -263,7 +269,8 @@ sequenceDiagram
                 deactivate ReportingService
             end
         else Payment Failed (Compensating Saga Rollback)
-            PaymentService->>Kafka: Publish "payment.failed" Event
+            PaymentService->>PaymentService: Save Payment & Outbox Message (Atomic DB Transaction)
+            PaymentService->>Kafka: Outbox Publisher dispatches "payment.failed" Event
             par Saga Compensating Action
                 Kafka->>OrderService: Deliver "payment.failed" Event
                 OrderService->>OrderService: Update Order (status: CANCELLED)

@@ -32,12 +32,7 @@ async def get_order_service(
 ) -> OrderApplicationService:
     """Dependency injector mapping persistence adapters to core use cases"""
     repo = SQLAlchemyOrderRepository(session)
-    
-    # Connect to Kafka if not open
-    if not mq_manager.producer:
-        await mq_manager.connect()
-        
-    publisher = OrderMessagingPublisher(mq_manager)
+    publisher = OrderMessagingPublisher(session)
     return OrderApplicationService(repo, publisher, user_client=user_client, product_client=product_client)
 
 @router.post("/", response_model=OrderDTO, status_code=status.HTTP_201_CREATED)

@@ -98,7 +98,7 @@ class PaymentMessagingSubscriber:
 
                 # 2. Proceed with domain command execution
                 repo = SQLAlchemyPaymentRepository(session)
-                publisher = PaymentMessagingPublisher(self.mq_manager)
+                publisher = PaymentMessagingPublisher(session)
                 service = PaymentApplicationService(repo, publisher)
 
                 command = ProcessPaymentCommand(order_id=order_id, event_id=event_id)

@@ -9,11 +9,15 @@ from src.infrastructure.config import settings
 from src.infrastructure.db_setup import db
 from src.presentation.api import router, mq_manager
 from src.adapter.messaging_sub import OrderMessagingSubscriber
+from shared.common.outbox import OutboxPublisher
 
 logger = logging.getLogger("OrderApplication")
 
 # Separate independent broker connection for background consumer threads
 background_mq_manager = KafkaManager(settings.KAFKA_BOOTSTRAP_SERVERS)
+
+# Initialize outbox publisher background worker
+outbox_publisher = OutboxPublisher(db, mq_manager)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -33,6 +37,9 @@ async def lifespan(app: FastAPI):
         """))
     logger.info("Idempotent consumers table initialized successfully.")
 
+    # Start Outbox Publisher background worker
+    outbox_publisher.start()
+
     # Open persistent Kafka connection for background subscriber listener
     await background_mq_manager.connect()
     subscriber = OrderMessagingSubscriber(background_mq_manager)
@@ -41,6 +48,7 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("Tearing down Order Service resources in lifespan context...")
+    await outbox_publisher.stop()
     await db.close()
     await mq_manager.close()
     await background_mq_manager.close()
@@ -71,7 +79,7 @@ setup_observability(app, settings.SERVICE_NAME)
 # Register cooperative graceful SIGTERM/SIGINT shutdown with 3s traffic draining
 register_graceful_shutdown(
     app, 
-    [db.close, mq_manager.close, background_mq_manager.close]
+    [outbox_publisher.stop, db.close, mq_manager.close, background_mq_manager.close]
 )
 
 @app.get("/health", tags=["System"])

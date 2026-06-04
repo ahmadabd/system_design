@@ -25,12 +25,7 @@ async def get_user_service(
 ) -> UserApplicationService:
     """Dependency injector mapping persistence adapters to the core use case layer"""
     repo = SQLAlchemyUserRepository(session)
-    
-    # Establish Kafka connection if not active
-    if not mq_manager.producer:
-        await mq_manager.connect()
-        
-    publisher = UserMessagingPublisher(mq_manager)
+    publisher = UserMessagingPublisher(session)
     return UserApplicationService(repo, publisher)
 
 @router.post("/", response_model=UserDTO, status_code=status.HTTP_201_CREATED)

@@ -28,12 +28,7 @@ async def get_payment_service(
 ) -> PaymentApplicationService:
     """Dependency injector mapping persistence adapters to core use cases"""
     repo = SQLAlchemyPaymentRepository(session)
-    
-    # Connect to Kafka if not open
-    if not mq_manager.producer:
-        await mq_manager.connect()
-        
-    publisher = PaymentMessagingPublisher(mq_manager)
+    publisher = PaymentMessagingPublisher(session)
     return PaymentApplicationService(repo, publisher)
 
 @router.get("/", response_model=list[PaymentDTO])

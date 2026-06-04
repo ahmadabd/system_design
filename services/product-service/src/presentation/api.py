@@ -25,12 +25,7 @@ async def get_product_service(
 ) -> ProductApplicationService:
     """Dependency injector mapping persistence adapters to core use cases"""
     repo = SQLAlchemyProductRepository(session)
-    
-    # Establish Kafka connection if not active
-    if not mq_manager.producer:
-        await mq_manager.connect()
-        
-    publisher = ProductMessagingPublisher(mq_manager)
+    publisher = ProductMessagingPublisher(session)
     return ProductApplicationService(repo, publisher)
 
 @router.post("/", response_model=ProductDTO, status_code=status.HTTP_201_CREATED)
