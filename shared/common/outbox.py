@@ -5,12 +5,36 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared.common.database import Database, OutboxMessage
 from shared.common.messaging import KafkaManager
 
+try:
+    from opentelemetry import trace
+    from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+    otel_available = True
+except ImportError:
+    otel_available = False
+
+try:
+    from opentelemetry.instrumentation.utils import suppress_instrumentation
+except ImportError:
+    suppress_instrumentation = None
+
 logger = logging.getLogger("OutboxPublisher")
 
 async def save_to_outbox(session: AsyncSession, topic: str, payload: dict) -> None:
     """Helper to save a message payload to the outbox database table.
     Must be called within an active transaction session.
+    Automatically propagates OpenTelemetry trace context.
     """
+    if otel_available:
+        try:
+            trace_headers = {}
+            TraceContextTextMapPropagator().inject(trace_headers)
+            if trace_headers:
+                if "metadata" not in payload:
+                    payload["metadata"] = {}
+                payload["metadata"]["trace_headers"] = trace_headers
+        except Exception as trace_err:
+            logger.warning(f"Failed to inject OTel context in save_to_outbox: {trace_err}")
+
     msg = OutboxMessage(
         topic=topic,
         payload=payload,
@@ -65,15 +89,26 @@ class OutboxPublisher:
 
         async with self.db._session_maker() as session:
             try:
-                # Query oldest unprocessed messages
-                stmt = (
-                    select(OutboxMessage)
-                    .where(OutboxMessage.processed == False)
-                    .order_by(OutboxMessage.id.asc())
-                    .limit(20)
-                )
-                result = await session.execute(stmt)
-                messages = result.scalars().all()
+                # Query oldest unprocessed messages inside suppress block if available
+                if suppress_instrumentation:
+                    with suppress_instrumentation():
+                        stmt = (
+                            select(OutboxMessage)
+                            .where(OutboxMessage.processed == False)
+                            .order_by(OutboxMessage.id.asc())
+                            .limit(20)
+                        )
+                        result = await session.execute(stmt)
+                        messages = result.scalars().all()
+                else:
+                    stmt = (
+                        select(OutboxMessage)
+                        .where(OutboxMessage.processed == False)
+                        .order_by(OutboxMessage.id.asc())
+                        .limit(20)
+                    )
+                    result = await session.execute(stmt)
+                    messages = result.scalars().all()
 
                 if not messages:
                     return
@@ -81,15 +116,44 @@ class OutboxPublisher:
                 logger.info(f"Outbox publisher: processing {len(messages)} pending outbox events.")
 
                 for msg in messages:
+                    # Attempt to extract parents trace context
+                    parent_context = None
+                    if otel_available:
+                        try:
+                            trace_headers = msg.payload.get("metadata", {}).get("trace_headers")
+                            if trace_headers:
+                                parent_context = TraceContextTextMapPropagator().extract(carrier=trace_headers)
+                        except Exception as trace_err:
+                            logger.warning(f"Failed to extract OTel context for outbox msg {msg.id}: {trace_err}")
+
                     try:
-                        # Publish using KafkaManager with breaker protection
-                        await self.mq_manager.publish(
-                            exchange_name="ecommerce.events",
-                            routing_key=msg.topic,
-                            event_data=msg.payload
-                        )
-                        # Delete the message upon successful dispatch to keep outbox database lean
-                        await session.delete(msg)
+                        # Publish Kafka event (outside of DB suppression context to allow tracing)
+                        if otel_available and parent_context:
+                            tracer = trace.get_tracer("outbox-publisher")
+                            with tracer.start_as_current_span(
+                                name=f"outbox.publish {msg.topic}",
+                                context=parent_context,
+                                kind=trace.SpanKind.PRODUCER
+                            ):
+                                await self.mq_manager.publish(
+                                    exchange_name="ecommerce.events",
+                                    routing_key=msg.topic,
+                                    event_data=msg.payload
+                                )
+                        else:
+                            await self.mq_manager.publish(
+                                exchange_name="ecommerce.events",
+                                routing_key=msg.topic,
+                                event_data=msg.payload
+                            )
+
+                        # Delete the message (inside suppress block to avoid tracing cleanup)
+                        if suppress_instrumentation:
+                            with suppress_instrumentation():
+                                await session.delete(msg)
+                        else:
+                            await session.delete(msg)
+
                     except Exception as pub_err:
                         logger.error(
                             f"Failed to publish outbox message ID {msg.id} (topic: '{msg.topic}'): {pub_err}"
@@ -97,7 +161,18 @@ class OutboxPublisher:
                         # Stop processing this batch to preserve event order
                         break
 
-                await session.commit()
+                # Commit operations inside suppress block
+                if suppress_instrumentation:
+                    with suppress_instrumentation():
+                        await session.commit()
+                else:
+                    await session.commit()
+
             except Exception as loop_err:
                 logger.error(f"Failed transaction step in outbox loop: {loop_err}", exc_info=True)
-                await session.rollback()
+                if suppress_instrumentation:
+                    with suppress_instrumentation():
+                        await session.rollback()
+                else:
+                    await session.rollback()
+
