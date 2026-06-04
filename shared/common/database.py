@@ -1,3 +1,4 @@
+import os
 from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import (
     create_async_engine,
@@ -38,12 +39,14 @@ Base = declarative_base()
 class Database:
     """Async Database Session Manager with Circuit Breaker resilience"""
     def __init__(self, db_url: str):
+        pool_size = int(os.getenv("DB_POOL_SIZE", "25"))
+        max_overflow = int(os.getenv("DB_MAX_OVERFLOW", "25"))
         self._engine: AsyncEngine = create_async_engine(
             db_url,
             pool_pre_ping=True,
             echo=False,
-            pool_size=10,
-            max_overflow=20
+            pool_size=pool_size,
+            max_overflow=max_overflow
         )
         self._session_maker = async_sessionmaker(
             bind=self._engine,
@@ -131,8 +134,10 @@ class Database:
                 await self.db_breaker._on_success()
             except Exception as e:
                 await session.rollback()
-                # If a database error occurs, register it as a failure
-                await self.db_breaker._on_failure(e)
+                # Only register database-level driver/connection failures as circuit breaker failures
+                from sqlalchemy.exc import DBAPIError
+                if isinstance(e, DBAPIError) or isinstance(e, (OSError, ConnectionError)):
+                    await self.db_breaker._on_failure(e)
                 raise e
             finally:
                 await session.close()

@@ -25,19 +25,19 @@ services:
     networks:
       - ecommerce-network
 
-  kafka-ui:
-    image: provectuslabs/kafka-ui:latest
-    container_name: kafka-ui
-    ports:
-      - "8080:8080"
-    environment:
-      KAFKA_CLUSTERS_0_NAME: local-cluster
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
-      DYNAMIC_CONFIG_ENABLED: 'true'
-    networks:
-      - ecommerce-network
-    depends_on:
-      - kafka
+  # kafka-ui:
+  #   image: provectuslabs/kafka-ui:latest
+  #   container_name: kafka-ui
+  #   ports:
+  #     - "8080:8080"
+  #   environment:
+  #     KAFKA_CLUSTERS_0_NAME: local-cluster
+  #     KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+  #     DYNAMIC_CONFIG_ENABLED: 'true'
+  #   networks:
+  #     - ecommerce-network
+  #   depends_on:
+  #     - kafka
 
   user-db:
     image: postgres:17-alpine
@@ -290,6 +290,7 @@ services:
   redis-exporter:
     image: oliver006/redis_exporter:latest
     container_name: redis-exporter
+    restart: on-failure
     environment:
       - REDIS_ADDR=redis:${REDIS_PORT:-6380}
       - REDIS_PASSWORD=${REDIS_PASSWORD:-sys_design_secure_cache_pass_2026}
@@ -303,6 +304,7 @@ services:
   kafka-exporter:
     image: danielqsj/kafka-exporter:latest
     container_name: kafka-exporter
+    restart: on-failure
     command: --kafka.server=kafka:29092
     ports:
       - "9308:9308"
