@@ -1,6 +1,7 @@
 import asyncio
 import logging
-from sqlalchemy.future import select
+import os
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from shared.common.database import Database, OutboxMessage
 from shared.common.messaging import KafkaManager
@@ -17,7 +18,31 @@ try:
 except ImportError:
     suppress_instrumentation = None
 
+try:
+    from prometheus_client import Gauge, Counter
+    service_name = os.getenv("SERVICE_NAME", "unknown-service")
+    outbox_backlog_size = Gauge(
+        "outbox_backlog_size",
+        "Number of pending messages in the database outbox",
+        ["service_name"]
+    )
+    outbox_published_total = Counter(
+        "outbox_published_total",
+        "Total number of messages successfully published from the outbox",
+        ["service_name", "topic"]
+    )
+    outbox_errors_total = Counter(
+        "outbox_errors_total",
+        "Total number of errors encountered during outbox publishing",
+        ["service_name", "error_type"]
+    )
+except ImportError:
+    outbox_backlog_size = None
+    outbox_published_total = None
+    outbox_errors_total = None
+
 logger = logging.getLogger("OutboxPublisher")
+
 
 async def save_to_outbox(session: AsyncSession, topic: str, payload: dict) -> None:
     """Helper to save a message payload to the outbox database table.
@@ -89,6 +114,20 @@ class OutboxPublisher:
 
         async with self.db._session_maker() as session:
             try:
+                # Update backlog count metric inside suppression context
+                if suppress_instrumentation:
+                    with suppress_instrumentation():
+                        count_stmt = select(func.count()).select_from(OutboxMessage).where(OutboxMessage.processed == False)
+                        count_result = await session.execute(count_stmt)
+                        total_pending = count_result.scalar() or 0
+                else:
+                    count_stmt = select(func.count()).select_from(OutboxMessage).where(OutboxMessage.processed == False)
+                    count_result = await session.execute(count_stmt)
+                    total_pending = count_result.scalar() or 0
+
+                if outbox_backlog_size:
+                    outbox_backlog_size.labels(service_name=service_name).set(total_pending)
+
                 # Query oldest unprocessed messages inside suppress block if available
                 if suppress_instrumentation:
                     with suppress_instrumentation():
@@ -147,6 +186,10 @@ class OutboxPublisher:
                                 event_data=msg.payload
                             )
 
+                        # Increment successfully published counter
+                        if outbox_published_total:
+                            outbox_published_total.labels(service_name=service_name, topic=msg.topic).inc()
+
                         # Delete the message (inside suppress block to avoid tracing cleanup)
                         if suppress_instrumentation:
                             with suppress_instrumentation():
@@ -158,6 +201,9 @@ class OutboxPublisher:
                         logger.error(
                             f"Failed to publish outbox message ID {msg.id} (topic: '{msg.topic}'): {pub_err}"
                         )
+                        # Increment publish errors counter
+                        if outbox_errors_total:
+                            outbox_errors_total.labels(service_name=service_name, error_type=type(pub_err).__name__).inc()
                         # Stop processing this batch to preserve event order
                         break
 
