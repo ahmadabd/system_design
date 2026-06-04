@@ -91,7 +91,7 @@ class ReportingMessagingSubscriber:
                 raise e
 
     async def _handle_order_created(self, event_data: dict) -> None:
-        """Store new customer order details locally in a PENDING state"""
+        """Store new customer order details locally in a PENDING state, or matching the already materialized status if out-of-order"""
         order_id = event_data.get("order_id")
         user_id = event_data.get("user_id")
         product_id = event_data.get("product_id")
@@ -113,18 +113,31 @@ class ReportingMessagingSubscriber:
                     logger.warning(f"Inbox Pattern: Duplicate 'order.created' event (ID: {event_id}). Discarding.")
                     return
 
-                # 2. Materialize order details (Idempotent Upsert)
+                # 2. Check if a payment has already materialized for this order (handles out-of-order events)
+                from sqlalchemy import select
+                pay_stmt = select(ReportingPaymentDB).where(ReportingPaymentDB.order_id == order_id)
+                pay_result = await session.execute(pay_stmt)
+                payment = pay_result.scalars().first()
+
+                initial_status = "PENDING"
+                if payment:
+                    if "SUCCEEDED" in payment.status:
+                        initial_status = "CONFIRMED"
+                    elif "FAILED" in payment.status:
+                        initial_status = "CANCELLED"
+
+                # 3. Materialize order details (Idempotent Upsert)
                 stmt = insert(ReportingOrderDB).values(
                     order_id=order_id,
                     user_id=user_id,
                     product_id=product_id,
                     quantity=quantity,
                     total_price=total_price,
-                    status="PENDING"
+                    status=initial_status
                 ).on_conflict_do_nothing()
                 await session.execute(stmt)
                 await session.commit()
-                logger.info(f"CQRS Materializer: Order={order_id} materialized as PENDING.")
+                logger.info(f"CQRS Materializer: Order={order_id} materialized as {initial_status}.")
             except Exception as e:
                 logger.error(f"Error materializing OrderCreated event: {e}", exc_info=True)
                 await session.rollback()

@@ -18,9 +18,21 @@ try:
         "Time spent executing message callbacks",
         ["topic"]
     )
+    messaging_dlq_routed_total = Counter(
+        "messaging_dlq_routed_total",
+        "Total number of messages routed to DLQ",
+        ["original_topic", "consumer_group", "error_class"]
+    )
+    messaging_consumer_retries_total = Counter(
+        "messaging_consumer_retries_total",
+        "Total number of consumer callback retry attempts",
+        ["topic", "consumer_group", "attempt"]
+    )
 except ImportError:
     messaging_kafka_messages_total = None
     messaging_process_duration_seconds = None
+    messaging_dlq_routed_total = None
+    messaging_consumer_retries_total = None
 
 logger = logging.getLogger("KafkaManager")
 
@@ -180,9 +192,36 @@ class KafkaManager:
                                 span.set_attribute("messaging.kafka.consumer_group", group_id)
                                 
                                 try:
-                                    # Process the message callback under the active span context
+                                    # Process the message callback under the active span context with local retry loop
                                     start_time = time.perf_counter()
-                                    await callback(msg.value)
+                                    
+                                    max_retries = 3
+                                    retry_delay = 1.0
+                                    for attempt in range(1, max_retries + 1):
+                                        try:
+                                            await callback(msg.value)
+                                            break
+                                        except Exception as cb_err:
+                                            from shared.common.resilience import is_retriable_exception
+                                            retriable = is_retriable_exception(cb_err)
+                                            
+                                            if not retriable or attempt == max_retries:
+                                                raise cb_err
+                                            
+                                            if messaging_consumer_retries_total:
+                                                messaging_consumer_retries_total.labels(
+                                                    topic=topic,
+                                                    consumer_group=group_id,
+                                                    attempt=str(attempt)
+                                                ).inc()
+
+                                            logger.warning(
+                                                f"Transient error in consumer callback (attempt {attempt}/{max_retries}) for topic '{topic}': {cb_err}. "
+                                                f"Retrying in {retry_delay}s..."
+                                            )
+                                            await asyncio.sleep(retry_delay)
+                                            retry_delay *= 2
+                                            
                                     duration = time.perf_counter() - start_time
                                     
                                     if messaging_kafka_messages_total:
@@ -249,6 +288,12 @@ class KafkaManager:
         
         logger.warning(f"DLQ Pipeline: Dead-lettering failed event from topic '{original_topic}' to '{dlq_topic}' due to error: {exception.__class__.__name__}")
         try:
+            if messaging_dlq_routed_total:
+                messaging_dlq_routed_total.labels(
+                    original_topic=original_topic,
+                    consumer_group=consumer_group,
+                    error_class=exception.__class__.__name__
+                ).inc()
             # Publish using standard circuit-breaker-protected publish method
             await self.publish(
                 exchange_name="ecommerce.events",

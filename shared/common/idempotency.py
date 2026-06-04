@@ -173,6 +173,22 @@ async def check_and_register_event(session: AsyncSession, event_id: str) -> bool
         )
         return False
     except Exception as e:
-        # If any db unique constraint violation occurs, it means another thread just registered it
-        logger.warning(f"Database insertion failed for event_id {event_id}, treating as duplicate: {e}")
-        return True
+        # We only want to treat actual unique key constraint/conflict violations as duplicates.
+        # Connection dropouts or transient failures must be raised so the retry/DLQ pipeline triggers.
+        def check_integrity(exc: Exception) -> bool:
+            for cls in exc.__class__.__mro__:
+                if cls.__name__ in ("IntegrityError", "UniqueViolationError", "IntegrityConstraintViolationError"):
+                    return True
+            if hasattr(exc, "orig") and exc.orig is not None and isinstance(exc.orig, Exception):
+                return check_integrity(exc.orig)
+            if hasattr(exc, "__cause__") and exc.__cause__ is not None:
+                return check_integrity(exc.__cause__)
+            return False
+            
+        if check_integrity(e):
+            logger.warning(f"Inbox Pattern: Unique constraint conflict for event_id {event_id}, treating as duplicate: {e}")
+            return True
+            
+        # For all other exceptions (including connection errors, timeouts, syntax errors), propagate
+        logger.error(f"Inbox Pattern: Database error while checking/registering event_id {event_id}: {e}")
+        raise e

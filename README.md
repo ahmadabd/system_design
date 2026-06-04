@@ -88,8 +88,34 @@ Implemented via a custom async-native `AsyncCircuitBreaker` wrapper (`shared/com
 
 ### E. Transactional Outbox Pattern (Event-Publishing Resilience)
 - **The Issue**: In standard event-driven systems, writing to the database and publishing to Kafka are separate operations. If Kafka goes down or a network timeout occurs right after the database transaction commits, the event is lost. Conversely, if you publish the event first and the DB commit fails, you dispatch a "ghost" event.
-- **The Solution**: We implement the **Transactional Outbox Pattern**. When a service updates its database (e.g., creating an order or reserving stock), it writes the event payload into a local `outbox_messages` table within the **same atomic database transaction**.
+- **The Solution**: We implement the **Transactional Outbox Pattern**. When a service updates its database (e.g., creating an order or reserving stock), it writes the event payload into a local `outbox_messages` table within the **same atomic database transaction** (implemented in `shared/common/outbox.py`).
 - **Self-Healing & Decoupled Uptime**: A background `OutboxPublisher` task continuously polls the local database table, publishes pending messages to Kafka, and deletes them upon success. If Kafka goes down (tripping the `kafka_breaker`), the API write still succeeds instantly, buffering the messages in PostgreSQL. Once Kafka recovers, the background publisher drains the queue automatically.
+
+### F. Read Fallbacks (Redis Cache-Aside) for Degraded Reads
+- **Resilient Fallback**: To preserve system readability during database outages, we implement a Redis-backed cache-aside fallback system. 
+- **`@cache_fallback` Decorator**: Applied to `GET` endpoints (e.g. `/products/{id}`, `/users/{id}`). Upon a database lookup failure (or if the database circuit breaker is in `OPEN` state), the decorator intercepts the call, reads the cached DTO from Redis (populated with a 5-minute TTL on prior successful DB reads), and returns it to the client with `200 OK`. 
+- **Write Fail-Fast Validation**: While `GET` read endpoints bypass database circuit breaker checks via cache fallbacks, mutating write endpoints (`POST`, `PUT`, `DELETE`) continue to fail-fast immediately if the database breaker is open.
+
+### G. Consumer Retry Loop & Dead Letter Queue (DLQ) Pipeline
+- **Transient vs. Non-Transient Failures**: In the background event consumers, exceptions are evaluated by a robust classification function (`is_retriable_exception` in `shared/common/resilience.py`).
+  - **Retriable Failures**: Transient issues like network dropouts, database socket timeouts, name resolution errors, or downstream HTTP `5xx` status codes. These are safely retried locally up to 3 times with exponential backoff (e.g. 1s, 2s, 4s).
+  - **Non-Retriable Failures**: Programming bugs, schema validation errors (`ValidationError`), database constraint violations (`IntegrityError`), and HTTP `4xx` client errors. These bypass retries entirely to avoid head-of-line partition blocking.
+- **Dead Letter Queue (DLQ) Routing**: If all retries for a retriable failure are exhausted, or if a non-retriable failure occurs, the consumer wraps the message in a diagnostic envelope containing metadata (original topic, consumer group, failure timestamp, exception class, error message, and complete traceback stack trace) and routes it to a `.deadletter` topic (e.g. `order.created.deadletter`), then commits the partition offset to keep the stream moving.
+
+### H. DLQ Replay CLI Utility
+- **Replay Capabilities**: A dedicated command-line tool `shared/bin/replay_dlq.py` is included to recover from dead-letter failures.
+- **Watermark Boundaries**: When executed, it scans DLQ topics, reads partition high watermarks to determine the batch boundaries (preventing infinite tail-chasing loops), reserializes the original payload, and republishes the event back into its original Kafka topic. It then commits the replay consumer offsets, advancing the DLQ pointer.
+
+### I. Observability & Dashboard Metrics
+- **Prometheus Metrics**: The consumer retry and DLQ pipelines are instrumented with dedicated metrics:
+  - `messaging_consumer_retries_total` (counter, labels: `topic`, `consumer_group`, `attempt`): Tracks individual consumer retry attempts.
+  - `messaging_dlq_routed_total` (counter, labels: `original_topic`, `consumer_group`, `error_class`): Tracks message counts directed to DLQs.
+  - `messaging_process_duration_seconds` (histogram, labels: `topic`): Tracks consumer execution latency.
+- **Enhanced Grafana Dashboard**: We provisioned new telemetry panels in the **"Consumer Retries & Dead Letter Queues (DLQ)"** row of the "Transactional Outbox & Read Resiliency" dashboard:
+  - **DLQ Routed Messages Rate**: Real-time rate of messages arriving in DLQs.
+  - **Consumer Callback Retry Attempts Rate**: Active retry rate per topic and attempt sequence.
+  - **Unreplayed DLQ Backlog (Messages)**: Monitored via consumer group lag (`kafka_consumergroup_lag`) of the replay group on `.deadletter` topics. This value automatically drops to 0 when replayed.
+  - **Consumer Callback Execution Time (Avg)**: Computes the average execution time of consumer callbacks to detect lag bottlenecks.
 
 ---
 

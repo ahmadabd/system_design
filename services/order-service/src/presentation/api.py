@@ -25,8 +25,8 @@ mq_manager = KafkaManager(settings.KAFKA_BOOTSTRAP_SERVERS)
 
 # Establish resilient HTTP client and downstream service client adapters
 http_client = ResilientHTTPClient(timeout=5.0)
-user_client = HTTPUserClient(http_client, settings.USER_SERVICE_URL)
-product_client = HTTPProductClient(http_client, settings.PRODUCT_SERVICE_URL)
+user_client = HTTPUserClient(http_client, settings.USER_SERVICE_URL, redis_url=settings.REDIS_URL)
+product_client = HTTPProductClient(http_client, settings.PRODUCT_SERVICE_URL, redis_url=settings.REDIS_URL)
 
 async def get_order_service(
     session: AsyncSession = Depends(db.get_session)

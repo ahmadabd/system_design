@@ -115,3 +115,63 @@ class AsyncCircuitBreaker:
                     f"Blocking requests for the next {self.recovery_timeout} seconds."
                 )
 
+
+def is_retriable_exception(e: Exception) -> bool:
+    """
+    Determines if an exception is retriable for consumer messaging loops.
+    - If it is an httpx.HTTPStatusError, we check the status code. Only 5xx status codes are retriable.
+    - 4xx status codes (like 401, 403, 404) are NOT retriable.
+    - Non-transient errors (validation, programming, data, unique constraint errors) are NOT retriable.
+    - General network or DB connection errors/timeouts are transient and retriable.
+    """
+    try:
+        import httpx
+        if isinstance(e, httpx.HTTPStatusError):
+            status_code = e.response.status_code
+            # 5xx errors are retriable, 4xx are not
+            return status_code >= 500
+        
+        # Check if there are nested exceptions or wrapped HTTPStatusErrors
+        if hasattr(e, "response") and isinstance(getattr(e, "response"), httpx.Response):
+            status_code = e.response.status_code
+            return status_code >= 500
+    except ImportError:
+        pass
+
+    # List of exception class names that indicate programming, validation,
+    # or database constraint/data/syntax errors that will never succeed on retry.
+    non_retriable_names = {
+        # Python built-ins / standard library errors
+        "ValidationError", "ValueError", "TypeError", "KeyError", 
+        "AttributeError", "NameError", "JSONDecodeError", "IndexError",
+        "SyntaxError", "ZeroDivisionError", "ModuleNotFoundError", 
+        "ImportError", "AssertionError",
+        # Database data, integrity, constraint, and syntax errors
+        "DataError", "IntegrityError", "ProgrammingError", "CompileError",
+        "InvalidRequestError", "UnsupportedCompilationError",
+        "IntegrityConstraintViolationError", "SyntaxOrAccessError",
+        "FeatureNotSupportedError", "InvalidTransactionStateError"
+    }
+
+    # Helper function to check recursively if the exception or any of its
+    # causes/context/original database errors are non-retriable.
+    def check_non_retriable(exc: Exception) -> bool:
+        for cls in exc.__class__.__mro__:
+            if cls.__name__ in non_retriable_names:
+                return True
+        # Inspect SQLAlchemy wrapped original error
+        if hasattr(exc, "orig") and exc.orig is not None and isinstance(exc.orig, Exception):
+            return check_non_retriable(exc.orig)
+        # Inspect chained exceptions
+        if hasattr(exc, "__cause__") and exc.__cause__ is not None:
+            return check_non_retriable(exc.__cause__)
+        if hasattr(exc, "__context__") and exc.__context__ is not None:
+            return check_non_retriable(exc.__context__)
+        return False
+
+    if check_non_retriable(e):
+        return False
+
+    return True
+
+
