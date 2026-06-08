@@ -29,15 +29,26 @@ class OrderApplicationService:
         if self.user_client and not await self.user_client.verify_user(command.user_id):
             raise ValueError(f"User with ID {command.user_id} does not exist.")
             
-        if self.product_client and not await self.product_client.verify_product(command.product_id):
-            raise ValueError(f"Product with ID {command.product_id} does not exist.")
+        product_details = None
+        if self.product_client:
+            product_details = await self.product_client.get_product_details(command.product_id)
+            if not product_details:
+                raise ValueError(f"Product with ID {command.product_id} does not exist.")
+        
+        # Resolve store_id
+        store_id = command.store_id
+        if store_id is None and product_details:
+            store_id = product_details.get("store_id")
+        if store_id is None:
+            store_id = 1
         
         # Instantiate aggregate root
         order = Order.create(
             user_id=command.user_id,
             product_id=command.product_id,
             quantity=command.quantity,
-            total_price=command.total_price
+            total_price=command.total_price,
+            store_id=store_id
         )
 
         # Persist aggregate
@@ -52,7 +63,8 @@ class OrderApplicationService:
                     user_id=event["user_id"],
                     product_id=event["product_id"],
                     quantity=event["quantity"],
-                    total_price=event["total_price"]
+                    total_price=event["total_price"],
+                    store_id=event["store_id"]
                 )
                 await self.event_publisher.publish_order_created(integration_event)
 

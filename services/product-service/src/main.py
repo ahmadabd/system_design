@@ -35,7 +35,17 @@ async def lifespan(app: FastAPI):
                 processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
-    logger.info("Idempotent consumers table initialized successfully.")
+        # Seed default store (ID 1)
+        await conn.execute(text("""
+            INSERT INTO stores (id, name, webhook_url)
+            VALUES (1, 'Default Store', 'http://localhost/webhooks/default')
+            ON CONFLICT (id) DO NOTHING
+        """))
+        # Sync the sequence so next insert starts at 2
+        await conn.execute(text("""
+            SELECT setval(pg_get_serial_sequence('stores', 'id'), coalesce(max(id), 1), max(id) IS NOT null) FROM stores;
+        """))
+    logger.info("Idempotent consumers table and default store initialized successfully.")
 
     # Start Outbox Publisher background worker
     outbox_publisher.start()

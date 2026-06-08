@@ -7,22 +7,24 @@ class Product:
         name: str,
         price: float,
         stock: int,
+        store_id: int = 1,
         id: int | None = None
     ):
         self.id = id
         self.name = name
         self.price = price
         self.stock = stock
+        self.store_id = store_id
         self.domain_events: List[dict] = []
 
     @classmethod
-    def create(cls, name: str, price: float, stock: int) -> "Product":
+    def create(cls, name: str, price: float, stock: int, store_id: int = 1) -> "Product":
         """Factory to create a new product"""
         if price < 0:
             raise ValueError("Price cannot be negative")
         if stock < 0:
             raise ValueError("Initial stock cannot be negative")
-        return cls(name=name, price=price, stock=stock)
+        return cls(name=name, price=price, stock=stock, store_id=store_id)
 
     def reserve_stock(self, quantity: int, order_id: int) -> None:
         """Reserve a given quantity of stock for an order"""

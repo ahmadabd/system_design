@@ -15,3 +15,8 @@ class ProductClient(ABC):
     async def verify_product(self, product_id: int) -> bool:
         """Verify if a product exists and is valid"""
         pass
+
+    @abstractmethod
+    async def get_product_details(self, product_id: int) -> dict | None:
+        """Fetch details of a product, or None if it doesn't exist"""
+        pass

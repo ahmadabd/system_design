@@ -9,6 +9,7 @@ class Order:
         quantity: int,
         total_price: float,
         status: str = "PENDING",
+        store_id: int = 1,
         id: int | None = None
     ):
         self.id = id
@@ -17,6 +18,7 @@ class Order:
         self.quantity = quantity
         self.total_price = total_price
         self.status = status
+        self.store_id = store_id
         self.domain_events: List[dict] = []
 
     @classmethod
@@ -25,7 +27,8 @@ class Order:
         user_id: int,
         product_id: int,
         quantity: int,
-        total_price: float
+        total_price: float,
+        store_id: int = 1
     ) -> "Order":
         """Factory method to place an order, starting in PENDING state"""
         if quantity <= 0:
@@ -38,7 +41,8 @@ class Order:
             product_id=product_id,
             quantity=quantity,
             total_price=total_price,
-            status="PENDING"
+            status="PENDING",
+            store_id=store_id
         )
         
         # Raise Domain Event
@@ -47,7 +51,8 @@ class Order:
             "user_id": user_id,
             "product_id": product_id,
             "quantity": quantity,
-            "total_price": total_price
+            "total_price": total_price,
+            "store_id": store_id
         })
         return order
 

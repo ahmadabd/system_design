@@ -1,8 +1,9 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from src.domain.product import Product
-from src.domain.repository import ProductRepository
-from src.adapter.db_models import ProductDB
+from src.domain.store import Store
+from src.domain.repository import ProductRepository, StoreRepository
+from src.adapter.db_models import ProductDB, StoreDB
 
 class SQLAlchemyProductRepository(ProductRepository):
     """Concrete repository mapping between SQLAlchemy DB models and the Product Domain Aggregate"""
@@ -15,7 +16,8 @@ class SQLAlchemyProductRepository(ProductRepository):
             id=db_prod.id,
             name=db_prod.name,
             price=db_prod.price,
-            stock=db_prod.stock
+            stock=db_prod.stock,
+            store_id=db_prod.store_id
         )
 
     async def save(self, product: Product) -> Product:
@@ -27,12 +29,14 @@ class SQLAlchemyProductRepository(ProductRepository):
                 db_prod.name = product.name
                 db_prod.price = product.price
                 db_prod.stock = product.stock
+                db_prod.store_id = product.store_id
         else:
             # Create new
             db_prod = ProductDB(
                 name=product.name,
                 price=product.price,
-                stock=product.stock
+                stock=product.stock,
+                store_id=product.store_id
             )
             self.session.add(db_prod)
         
@@ -52,3 +56,46 @@ class SQLAlchemyProductRepository(ProductRepository):
         result = await self.session.execute(query)
         db_products = result.scalars().all()
         return [self._to_domain(p) for p in db_products]
+
+class SQLAlchemyStoreRepository(StoreRepository):
+    """Concrete repository mapping between SQLAlchemy DB models and the Store Domain Aggregate"""
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    def _to_domain(self, db_store: StoreDB) -> Store:
+        """Map ORM entity to Domain Aggregate"""
+        return Store(
+            id=db_store.id,
+            name=db_store.name,
+            webhook_url=db_store.webhook_url
+        )
+
+    async def save(self, store: Store) -> Store:
+        """Persist Domain Aggregate to the Database"""
+        if store.id is not None:
+            db_store = await self.session.get(StoreDB, store.id)
+            if db_store:
+                db_store.name = store.name
+                db_store.webhook_url = store.webhook_url
+        else:
+            db_store = StoreDB(
+                name=store.name,
+                webhook_url=store.webhook_url
+            )
+            self.session.add(db_store)
+        await self.session.flush()
+        return self._to_domain(db_store)
+
+    async def find_by_id(self, store_id: int) -> Store | None:
+        """Find store by ID and map to Domain Aggregate"""
+        db_store = await self.session.get(StoreDB, store_id)
+        if not db_store:
+            return None
+        return self._to_domain(db_store)
+
+    async def find_all(self) -> list[Store]:
+        """Fetch all stores and map to Domain Aggregates"""
+        query = select(StoreDB)
+        result = await self.session.execute(query)
+        db_stores = result.scalars().all()
+        return [self._to_domain(s) for s in db_stores]

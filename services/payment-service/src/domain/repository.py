@@ -25,7 +25,7 @@ class PaymentRepository(ABC):
         pass
 
     @abstractmethod
-    async def save_materialized_order(self, order_id: int, total_price: float, quantity: int) -> None:
+    async def save_materialized_order(self, order_id: int, total_price: float, quantity: int, store_id: int = 1) -> None:
         """Save/upsert local materialized order details (CQRS view)"""
         pass
 

@@ -7,6 +7,7 @@ class OrderDTO(BaseModel):
     quantity: int
     total_price: float
     status: str
+    store_id: int
 
     class Config:
         from_attributes = True

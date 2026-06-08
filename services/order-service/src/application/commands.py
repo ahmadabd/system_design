@@ -5,6 +5,7 @@ class CreateOrderCommand(BaseModel):
     product_id: int
     quantity: int
     total_price: float
+    store_id: int | None = None
 
 class ConfirmOrderCommand(BaseModel):
     order_id: int

@@ -48,15 +48,15 @@ class HTTPProductClient(ProductClient):
         self.base_url = base_url.rstrip("/")
         self.redis = aioredis.from_url(redis_url, decode_responses=True) if redis_url else None
 
-    async def verify_product(self, product_id: int) -> bool:
+    async def get_product_details(self, product_id: int) -> dict | None:
         url = f"{self.base_url}/products/{product_id}"
         try:
-            logger.info(f"Verifying product {product_id} via HTTP: {url}")
+            logger.info(f"Fetching product {product_id} details via HTTP: {url}")
             response = await self.http_client.get(url)
             if response.status_code == 200:
-                logger.info(f"Product {product_id} verified successfully.")
-                return True
-            logger.warning(f"Product {product_id} verification failed: HTTP status {response.status_code}")
+                logger.info(f"Product {product_id} details fetched successfully.")
+                return response.json()
+            logger.warning(f"Product {product_id} details fetch failed: HTTP status {response.status_code}")
         except Exception as e:
             logger.error(f"Failed to contact product-service for product {product_id}: {e}")
 
@@ -66,9 +66,13 @@ class HTTPProductClient(ProductClient):
             try:
                 cached_val = await self.redis.get(cache_key)
                 if cached_val:
-                    logger.info(f"Product {product_id} verified from Redis Cache Fallback (Product Service down).")
-                    return True
+                    logger.info(f"Product {product_id} details retrieved from Redis Cache Fallback.")
+                    return json.loads(cached_val)
             except Exception as cache_err:
                 logger.warning(f"Error querying Redis cache for product {product_id}: {cache_err}")
 
-        return False
+        return None
+
+    async def verify_product(self, product_id: int) -> bool:
+        details = await self.get_product_details(product_id)
+        return details is not None

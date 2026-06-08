@@ -97,9 +97,10 @@ class ReportingMessagingSubscriber:
         product_id = event_data.get("product_id")
         quantity = event_data.get("quantity")
         total_price = event_data.get("total_price")
+        store_id = event_data.get("store_id", 1)
         event_id = event_data.get("metadata", {}).get("event_id", f"order-created-{order_id}")
 
-        logger.info(f"CQRS Materializer: Processing OrderCreated event (ID: {event_id}) for Order={order_id}")
+        logger.info(f"CQRS Materializer: Processing OrderCreated event (ID: {event_id}) for Order={order_id}, Store={store_id}")
 
         if not order_id:
             logger.error("Missing order_id in OrderCreated payload. Skipping.")
@@ -133,7 +134,8 @@ class ReportingMessagingSubscriber:
                     product_id=product_id,
                     quantity=quantity,
                     total_price=total_price,
-                    status=initial_status
+                    status=initial_status,
+                    store_id=store_id
                 ).on_conflict_do_nothing()
                 await session.execute(stmt)
                 await session.commit()

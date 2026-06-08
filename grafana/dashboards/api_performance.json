@@ -689,7 +689,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(rate(messaging_kafka_messages_total[5m])) by (topic, operation) or vector(0)",
+          "expr": "sum(rate(messaging_kafka_messages_total[1m])) by (topic, operation) or vector(0)",
           "legendFormat": "{{operation}} - {{topic}} events/s",
           "range": true,
           "refId": "A"
@@ -778,7 +778,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(messaging_process_duration_seconds_bucket[5m])) by (le, topic)) or vector(0)",
+          "expr": "histogram_quantile(0.95, sum(rate(messaging_process_duration_seconds_bucket[1m])) by (le, topic)) or vector(0)",
           "legendFormat": "{{topic}} consumer callback latency (p95)",
           "range": true,
           "refId": "A"

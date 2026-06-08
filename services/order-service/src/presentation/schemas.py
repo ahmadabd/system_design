@@ -5,3 +5,4 @@ class CreateOrderRequest(BaseModel):
     product_id: int = Field(..., gt=0)
     quantity: int = Field(..., gt=0)
     total_price: float = Field(..., gt=0.0)
+    store_id: int | None = Field(default=None, gt=0)

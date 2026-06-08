@@ -1,24 +1,31 @@
 import logging
 from src.domain.product import Product
-from src.domain.repository import ProductRepository
-from src.application.commands import CreateProductCommand, ReserveInventoryCommand
-from src.application.dtos import ProductDTO
+from src.domain.store import Store
+from src.domain.repository import ProductRepository, StoreRepository
+from src.application.commands import CreateProductCommand, ReserveInventoryCommand, CreateStoreCommand
+from src.application.dtos import ProductDTO, StoreDTO
 from shared.contracts.events import InventoryReservedEvent, InventoryFailedEvent
 
 logger = logging.getLogger("ProductApplicationService")
 
 class ProductApplicationService:
-    def __init__(self, product_repo: ProductRepository, event_publisher):
+    def __init__(self, product_repo: ProductRepository, event_publisher, store_repo: StoreRepository = None):
         self.product_repo = product_repo
         self.event_publisher = event_publisher
+        self.store_repo = store_repo
 
     async def create_product(self, command: CreateProductCommand) -> ProductDTO:
         """Register a new catalog product with initial stock"""
         logger.info(f"Creating catalog product: {command.name}")
+        if self.store_repo:
+            store = await self.store_repo.find_by_id(command.store_id)
+            if not store:
+                raise ValueError(f"Store with ID {command.store_id} does not exist.")
         product = Product.create(
             name=command.name,
             price=command.price,
-            stock=command.stock
+            stock=command.stock,
+            store_id=command.store_id
         )
         saved = await self.product_repo.save(product)
         return ProductDTO.model_validate(saved)
@@ -82,3 +89,28 @@ class ProductApplicationService:
                     await self.event_publisher.publish_inventory_failed(failed_event)
         finally:
             product.clear_events()
+
+    async def create_store(self, command: CreateStoreCommand) -> StoreDTO:
+        """Register a new store in the system"""
+        logger.info(f"Creating store: {command.name}")
+        if not self.store_repo:
+            raise RuntimeError("Store repository not configured.")
+        store = Store.create(name=command.name, webhook_url=command.webhook_url)
+        saved = await self.store_repo.save(store)
+        return StoreDTO.model_validate(saved)
+
+    async def get_store_by_id(self, store_id: int) -> StoreDTO | None:
+        """Fetch details of a single store"""
+        if not self.store_repo:
+            raise RuntimeError("Store repository not configured.")
+        s = await self.store_repo.find_by_id(store_id)
+        if not s:
+            return None
+        return StoreDTO.model_validate(s)
+
+    async def get_all_stores(self) -> list[StoreDTO]:
+        """Fetch all registered stores"""
+        if not self.store_repo:
+            raise RuntimeError("Store repository not configured.")
+        stores = await self.store_repo.find_all()
+        return [StoreDTO.model_validate(s) for s in stores]

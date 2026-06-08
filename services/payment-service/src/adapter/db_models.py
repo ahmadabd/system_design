@@ -17,3 +17,4 @@ class MaterializedOrderDB(Base):
     order_id = Column(Integer, primary_key=True, index=True)
     total_price = Column(Float, nullable=False)
     quantity = Column(Integer, nullable=False, default=1)
+    store_id = Column(Integer, nullable=False, default=1)

@@ -8,55 +8,101 @@ A production-grade, highly available, resilient, and observable E-Commerce platf
 
 ```mermaid
 graph TD
-    Client["Client / Locust Load Tester"] -->|"Port 80 (Virtual IP)"| Keepalived{"Keepalived Master/Backup VRRP"}
-    Client -.->|"Direct Checkouts"| Keepalived
-    Keepalived -->|"Active Ingress"| Traefik["Traefik Master Load Balancer"]
-    Keepalived -.->|"Failover Ingress"| TraefikBackup["Traefik Backup Load Balancer"]
+    %% Node Definitions
+    Client["Client / Locust Load Tester"]
+    Keepalived{"Keepalived Master/Backup VRRP"}
 
     subgraph GatewayRouting ["API Gateway Routing (Traefik)"]
-        Traefik & TraefikBackup -->|"Rate Limiting & Load Shedding"| Router["Path-Based Prefix Router"]
+        Traefik["Traefik Master Load Balancer"]
+        TraefikBackup["Traefik Backup Load Balancer"]
+        Router["Path-Based Prefix Router"]
     end
 
     subgraph BoundedContexts ["DDD Bounded Contexts (FastAPI)"]
-        Router -->|"/users/*"| UserServ["user-service:8001"]
-        Router -->|"/products/*"| ProdServ["product-service:8002"]
-        Router -->|"/orders/*"| OrdServ["order-service:8003"]
-        Router -->|"/payments/*"| PayServ["payment-service:8004"]
-        Router -->|"/reporting/*"| RepServ["reporting-service:8005"]
+        UserServ["user-service:8001"]
+        ProdServ["product-service:8002"]
+        OrdServ["order-service:8003"]
+        PayServ["payment-service:8004"]
+        RepServ["reporting-service:8005"]
     end
 
     subgraph DataCaching ["Data & Caching Tier"]
-        UserServ -->|"db_breaker"| UserDB[("user_db: PostgreSQL")]
-        ProdServ -->|"db_breaker"| ProdDB[("product_db: PostgreSQL")]
-        OrdServ -->|"db_breaker"| OrdDB[("order_db: PostgreSQL")]
-        PayServ -->|"db_breaker"| PayDB[("payment_db: PostgreSQL")]
-        RepServ -->|"db_breaker"| RepDB[("reporting_db: PostgreSQL")]
-        
-        UserServ & ProdServ & OrdServ & PayServ & RepServ -->|"Idempotency Cache"| Redis[("redis: Redis 7")]
+        UserDB[("user_db: PostgreSQL")]
+        ProdDB[("product_db: PostgreSQL")]
+        OrdDB[("order_db: PostgreSQL")]
+        PayDB[("payment_db: PostgreSQL")]
+        RepDB[("reporting_db: PostgreSQL")]
+        Redis[("redis: Redis 7")]
     end
 
     subgraph EventBroker ["Asynchronous Event Broker"]
-        UserServ -.->|"kafka_breaker"| Kafka[("Apache Kafka KRaft Broker")]
-        ProdServ -.->|"kafka_breaker"| Kafka
-        OrdServ -.->|"kafka_breaker"| Kafka
-        PayServ -.->|"kafka_breaker"| Kafka
-        RepServ -.->|"kafka_breaker"| Kafka
-        
-        Kafka -.->|"Event Subscription / Inbox Pattern"| UserServ
-        Kafka -.->|"Event Subscription / Inbox Pattern"| ProdServ
-        Kafka -.->|"Event Subscription / Inbox Pattern"| OrdServ
-        Kafka -.->|"Event Subscription / Inbox Pattern"| PayServ
-        Kafka -.->|"Event Subscription / Inbox Pattern"| RepServ
+        Kafka[("Apache Kafka KRaft Broker")]
     end
 
     subgraph Observability ["Distributed Observability Stack"]
-        UserServ & ProdServ & OrdServ & PayServ & RepServ & Traefik -->|"OTel Traces & Metrics"| OTel["OTel Collector:4317"]
-        OTel -->|"Traces"| JG["Jaeger UI:16686"]
-        OTel -->|"Metrics"| PR["Prometheus:9090"]
-        OTel -->|"Logs"| LK["Loki:3100"]
-        PR -->|"Dashboards"| GF["Grafana:3000"]
-        PR -->|"Alerts"| AM["Alertmanager:9093"]
+        OTel["OTel Collector:4317"]
+        JG["Jaeger UI:16686"]
+        PR["Prometheus:9090"]
+        LK["Loki:3100"]
+        GF["Grafana:3000"]
+        AM["Alertmanager:9093"]
     end
+
+    %% Gateway Routing Connections
+    Client -->|"Port 80 (Virtual IP)"| Keepalived
+    Client -.->|"Direct Checkouts"| Keepalived
+    Keepalived -->|"Active Ingress"| Traefik
+    Keepalived -.->|"Failover Ingress"| TraefikBackup
+    Traefik -->|"Rate Limiting & Load Shedding"| Router
+    TraefikBackup -->|"Rate Limiting & Load Shedding"| Router
+
+    %% Bounded Contexts Connections
+    Router -->|"/users/*"| UserServ
+    Router -->|"/products/*"| ProdServ
+    Router -->|"/orders/*"| OrdServ
+    Router -->|"/payments/*"| PayServ
+    Router -->|"/reporting/*"| RepServ
+
+    %% Database Connections
+    UserServ -->|"db_breaker"| UserDB
+    ProdServ -->|"db_breaker"| ProdDB
+    OrdServ -->|"db_breaker"| OrdDB
+    PayServ -->|"db_breaker"| PayDB
+    RepServ -->|"db_breaker"| RepDB
+
+    %% Idempotency Cache Connections
+    UserServ -->|"Idempotency Cache"| Redis
+    ProdServ -->|"Idempotency Cache"| Redis
+    OrdServ -->|"Idempotency Cache"| Redis
+    PayServ -->|"Idempotency Cache"| Redis
+    RepServ -->|"Idempotency Cache"| Redis
+
+    %% Kafka Event Broker Connections
+    UserServ -.->|"kafka_breaker"| Kafka
+    ProdServ -.->|"kafka_breaker"| Kafka
+    OrdServ -.->|"kafka_breaker"| Kafka
+    PayServ -.->|"kafka_breaker"| Kafka
+    RepServ -.->|"kafka_breaker"| Kafka
+
+    Kafka -.->|"Event Subscription / Inbox Pattern"| UserServ
+    Kafka -.->|"Event Subscription / Inbox Pattern"| ProdServ
+    Kafka -.->|"Event Subscription / Inbox Pattern"| OrdServ
+    Kafka -.->|"Event Subscription / Inbox Pattern"| PayServ
+    Kafka -.->|"Event Subscription / Inbox Pattern"| RepServ
+
+    %% Observability Connections
+    UserServ -->|"OTel Traces & Metrics"| OTel
+    ProdServ -->|"OTel Traces & Metrics"| OTel
+    OrdServ -->|"OTel Traces & Metrics"| OTel
+    PayServ -->|"OTel Traces & Metrics"| OTel
+    RepServ -->|"OTel Traces & Metrics"| OTel
+    Traefik -->|"OTel Traces & Metrics"| OTel
+
+    OTel -->|"Traces"| JG
+    OTel -->|"Metrics"| PR
+    OTel -->|"Logs"| LK
+    PR -->|"Dashboards"| GF
+    PR -->|"Alerts"| AM
 ```
 
 ---
@@ -204,25 +250,31 @@ Our microservice architecture cleanly separates state mutation (Commands) from s
 
 ```mermaid
 flowchart TD
+    %% Node Definitions
+    Kafka[("Topic: order.created")]
+
     subgraph Order Context [Order Bounded Context]
         CMD[1. POST /orders] -->|Write Model| OrderDB[("Order DB: PostgreSQL")]
-        OrderDB -->|Publish Event| Kafka[("Topic: order.created")]
     end
 
     subgraph Payment Context [Payment Bounded Context]
-        Kafka -->|Asynchronous Sync| Sub[Kafka Consumer]
-        Sub -->|Write local projection| ReadTable[("materialized_orders Read Model")]
+        Sub[Kafka Consumer] -->|Write local projection| ReadTable[("materialized_orders Read Model")]
         
         InvEvent[Event: inventory.reserved] -->|Consume| PayProc[process_payment]
         PayProc -->|2. Local DB Query| ReadTable
     end
 
     subgraph Reporting Context [Reporting Bounded Context]
-        Kafka -->|Asynchronous Sync| RepSub[Kafka Consumer]
-        RepSub -->|Write Materialized Views| RepTable[("Profiles, Orders, & Payments Read Model")]
+        RepSub[Kafka Consumer] -->|Write Materialized Views| RepTable[("Profiles, Orders, & Payments Read Model")]
         
         QueryCMD[3. GET /reporting/customers/.../dashboard] -->|Read Model Query| RepTable
+        QueryStoreCMD[4. GET /reporting/stores/.../dashboard] -->|Read Model Query| RepTable
     end
+
+    %% Flow Connections
+    OrderDB -->|Publish Event| Kafka
+    Kafka -->|Asynchronous Sync| Sub
+    Kafka -->|Asynchronous Sync| RepSub
 ```
 
 1. **The Write Model (Command Side)**: Exclusively managed by `order-service`. Mutating operations (e.g. creating an order) write directly to the `order_db` source of truth.
@@ -243,7 +295,9 @@ sequenceDiagram
 
     Client->>OrderService: POST /orders
     activate OrderService
-    OrderService->>OrderService: Write Order & Outbox Message (Atomic DB Transaction)
+    OrderService->>ProductService: GET /products/{id} (Verify product & resolve store_id)
+    ProductService-->>OrderService: Return Product Details (with store_id)
+    OrderService->>OrderService: Write Order (with store_id) & Outbox Message (Atomic DB Transaction)
     OrderService-->>Client: Returns Order DTO (PENDING)
     deactivate OrderService
     OrderService->>Kafka: Outbox Publisher dispatches "order.created" Event
@@ -602,15 +656,19 @@ All service interactions are routed through the Traefik Gateway on port `80`.
 | :--- | :--- | :--- | :--- | :--- | :---: |
 | **User Service** | `POST` | `/users` | `:8001/` | `{"username", "email", "password"}` | Yes (`X-Idempotency-Key`) |
 | **User Service** | `GET` | `/users/{id}` | `:8001/{id}` | None (Path Parameter) | No |
-| **Product Service** | `POST` | `/products` | `:8002/` | `{"name", "price", "stock"}` | Yes (`X-Idempotency-Key`) |
+| **Product Service** | `POST` | `/products` | `:8002/` | `{"name", "price", "stock", "store_id"}` | Yes (`X-Idempotency-Key`) |
 | **Product Service** | `GET` | `/products` | `:8002/` | None | No |
 | **Product Service** | `GET` | `/products/{id}` | `:8002/{id}` | None (Path Parameter) | No |
-| **Order Service** | `POST` | `/orders` | `:8003/` | `{"user_id", "product_id", "quantity", "total_price"}` | Yes (`X-Idempotency-Key`) |
+| **Product Service** | `POST` | `/products/stores` | `:8002/stores` | `{"name", "webhook_url"}` | No |
+| **Product Service** | `GET` | `/products/stores` | `:8002/stores` | None | No |
+| **Product Service** | `GET` | `/products/stores/{store_id}` | `:8002/stores/{store_id}` | None (Path Parameter) | No |
+| **Order Service** | `POST` | `/orders` | `:8003/` | `{"user_id", "product_id", "quantity", "total_price", "store_id"}` | Yes (`X-Idempotency-Key`) |
 | **Order Service** | `GET` | `/orders` | `:8003/` | None | No |
 | **Order Service** | `GET` | `/orders/{id}` | `:8003/{id}` | None (Path Parameter) | No |
 | **Order Service** | `GET` | `/orders/{id}/status-stream` | `:8003/{id}/status-stream` | None (Real-time SSE Stream) | No |
 | **Payment Service** | `GET` | `/payments` | `:8004/` | None | No |
 | **Payment Service** | `GET` | `/payments/{order_id}` | `:8004/{order_id}` | None (Path Parameter) | No |
+| **Reporting Service** | `GET` | `/reporting/stores/{store_id}/dashboard` | `:8005/stores/{store_id}/dashboard` | None (Path Parameter) | No |
 
 ---
 
@@ -681,6 +739,26 @@ All service interactions are routed through the Traefik Gateway on port `80`.
 * **Retrieve Consolidated Customer Report**:
   ```bash
   curl -s http://localhost/reporting/customers/1/dashboard
+  ```
+
+##### 6. Store Bounded Context & Webhook Management
+* **Create a Partner Store (with Webhook URL)**:
+  ```bash
+  curl -i -X POST http://localhost/products/stores \
+    -H "Content-Type: application/json" \
+    -d '{"name": "Partner Store A", "webhook_url": "https://api.partner-a.com/webhook"}'
+  ```
+* **List All Registered Stores**:
+  ```bash
+  curl -i http://localhost/products/stores
+  ```
+* **Retrieve Specific Store Details**:
+  ```bash
+  curl -i http://localhost/products/stores/1
+  ```
+* **Retrieve Store Sales Performance Dashboard (CQRS View)**:
+  ```bash
+  curl -s http://localhost/reporting/stores/1/dashboard
   ```
 
 ---

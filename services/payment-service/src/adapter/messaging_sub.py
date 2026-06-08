@@ -37,9 +37,10 @@ class PaymentMessagingSubscriber:
         order_id = event_data.get("order_id")
         total_price = event_data.get("total_price")
         quantity = event_data.get("quantity", 1)
+        store_id = event_data.get("store_id", 1)
         event_id = event_data.get("metadata", {}).get("event_id", f"order-created-fallback-{order_id}")
 
-        logger.info(f"Received OrderCreated event for materialization (ID: {event_id}): Order={order_id}, Price={total_price}, Qty={quantity}")
+        logger.info(f"Received OrderCreated event for materialization (ID: {event_id}): Order={order_id}, Price={total_price}, Qty={quantity}, Store={store_id}")
 
         if not order_id or total_price is None:
             logger.error("Invalid OrderCreated event structure for materialization. Skipping processing.")
@@ -60,11 +61,12 @@ class PaymentMessagingSubscriber:
 
                 # 2. Persist details locally using SQLAlchemy Repository
                 repo = SQLAlchemyPaymentRepository(session)
-                logger.info(f"CQRS Materialized State: Persisting order locally in payment-service for Order={order_id}: Price={total_price}, Qty={quantity}")
+                logger.info(f"CQRS Materialized State: Persisting order locally in payment-service for Order={order_id}: Price={total_price}, Qty={quantity}, Store={store_id}")
                 await repo.save_materialized_order(
                     order_id=order_id,
                     total_price=total_price,
-                    quantity=quantity
+                    quantity=quantity,
+                    store_id=store_id
                 )
                 
                 await session.commit()

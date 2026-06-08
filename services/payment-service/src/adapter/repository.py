@@ -62,17 +62,19 @@ class SQLAlchemyPaymentRepository(PaymentRepository):
         db_payments = result.scalars().all()
         return [self._to_domain(p) for p in db_payments]
 
-    async def save_materialized_order(self, order_id: int, total_price: float, quantity: int) -> None:
+    async def save_materialized_order(self, order_id: int, total_price: float, quantity: int, store_id: int = 1) -> None:
         """Save/upsert local materialized order details (CQRS view)"""
         db_order = await self.session.get(MaterializedOrderDB, order_id)
         if db_order:
             db_order.total_price = total_price
             db_order.quantity = quantity
+            db_order.store_id = store_id
         else:
             db_order = MaterializedOrderDB(
                 order_id=order_id,
                 total_price=total_price,
-                quantity=quantity
+                quantity=quantity,
+                store_id=store_id
             )
             self.session.add(db_order)
         await self.session.flush()
@@ -85,5 +87,6 @@ class SQLAlchemyPaymentRepository(PaymentRepository):
         return {
             "order_id": db_order.order_id,
             "total_price": db_order.total_price,
-            "quantity": db_order.quantity
+            "quantity": db_order.quantity,
+            "store_id": db_order.store_id
         }

@@ -49,7 +49,8 @@ async def create_order(
             user_id=request_data.user_id,
             product_id=request_data.product_id,
             quantity=request_data.quantity,
-            total_price=request_data.total_price
+            total_price=request_data.total_price,
+            store_id=request_data.store_id
         )
         return await service.create_order(command)
     except ValueError as e:
