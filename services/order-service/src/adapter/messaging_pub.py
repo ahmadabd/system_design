@@ -20,3 +20,13 @@ class OrderMessagingPublisher:
         logger.info(f"Writing order created event to outbox for order_id: {event.order_id}")
         await save_to_outbox(self.session, routing_key, event_dict)
 
+    async def publish_order_confirmed(self, event) -> None:
+        """Queue an OrderConfirmedEvent into the database outbox"""
+        event_dict = event.model_dump()
+        event_dict["metadata"]["timestamp"] = event.metadata.timestamp.isoformat()
+        
+        routing_key = "order.confirmed"
+        logger.info(f"Writing order confirmed event to outbox for order_id: {event.order_id}")
+        await save_to_outbox(self.session, routing_key, event_dict)
+
+

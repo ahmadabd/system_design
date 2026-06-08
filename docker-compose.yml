@@ -216,6 +216,41 @@ services:
     networks:
       - ecommerce-network
 
+  webhook-db:
+    image: postgres:17-alpine
+    container_name: webhook-db
+    ports:
+      - "${WEBHOOK_DB_HOST_PORT:-5437}:5432"
+    environment:
+      - POSTGRES_DB=${WEBHOOK_DB_NAME:-webhook_db}
+      - POSTGRES_USER=${WEBHOOK_DB_USER:-postgres}
+      - POSTGRES_PASSWORD=${WEBHOOK_DB_PASSWORD:-postgres_password}
+    volumes:
+      - webhook_db_data:/var/lib/postgresql/data
+    networks:
+      - ecommerce-network
+
+  webhook-service:
+    build:
+      context: .
+      dockerfile: services/webhook-service/Dockerfile
+    container_name: webhook-service
+    ports:
+      - "${WEBHOOK_SERVICE_PORT:-8006}:${WEBHOOK_SERVICE_PORT:-8006}"
+    environment:
+      - PORT=${WEBHOOK_SERVICE_PORT:-8006}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - DATABASE_URL=postgresql+asyncpg://${WEBHOOK_DB_USER:-postgres}:${WEBHOOK_DB_PASSWORD:-postgres_password}@webhook-db:5432/${WEBHOOK_DB_NAME:-webhook_db}
+      - KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS:-kafka:29092}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+      - SERVICE_NAME=webhook-service
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-sys_design_secure_cache_pass_2026}@redis:${REDIS_PORT:-6379}
+    depends_on:
+      - webhook-db
+      - kafka
+    networks:
+      - ecommerce-network
+
   traefik-master:
     image: traefik:v3.7
     container_name: traefik-master
@@ -226,13 +261,14 @@ services:
       - "80:80"
     networks:
       ecommerce-network:
-        ipv4_address: 172.20.0.250
+          ipv4_address: 172.20.0.250
     depends_on:
       - user-service
       - product-service
       - order-service
       - payment-service
       - reporting-service
+      - webhook-service
 
   traefik-backup:
     image: traefik:v3.7
@@ -242,13 +278,14 @@ services:
       - ./dynamic.yml:/etc/traefik/dynamic.yml:ro
     networks:
       ecommerce-network:
-        ipv4_address: 172.20.0.251
+          ipv4_address: 172.20.0.251
     depends_on:
       - user-service
       - product-service
       - order-service
       - payment-service
       - reporting-service
+      - webhook-service
 
   keepalived-master:
     image: osixia/keepalived:latest
@@ -329,5 +366,6 @@ volumes:
   kafka_data:
   payment_db_data:
   reporting_db_data:
+  webhook_db_data:
 
 

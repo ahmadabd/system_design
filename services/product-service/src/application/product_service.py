@@ -17,10 +17,12 @@ class ProductApplicationService:
     async def create_product(self, command: CreateProductCommand) -> ProductDTO:
         """Register a new catalog product with initial stock"""
         logger.info(f"Creating catalog product: {command.name}")
+        is_famous = False
         if self.store_repo:
             store = await self.store_repo.find_by_id(command.store_id)
             if not store:
                 raise ValueError(f"Store with ID {command.store_id} does not exist.")
+            is_famous = store.is_famous
         product = Product.create(
             name=command.name,
             price=command.price,
@@ -28,19 +30,38 @@ class ProductApplicationService:
             store_id=command.store_id
         )
         saved = await self.product_repo.save(product)
-        return ProductDTO.model_validate(saved)
+        dto = ProductDTO.model_validate(saved)
+        dto.is_famous = is_famous
+        return dto
 
     async def get_product_by_id(self, product_id: int) -> ProductDTO | None:
         """Fetch details of a single product"""
         p = await self.product_repo.find_by_id(product_id)
         if not p:
             return None
-        return ProductDTO.model_validate(p)
+        is_famous = False
+        if self.store_repo:
+            store = await self.store_repo.find_by_id(p.store_id)
+            if store:
+                is_famous = store.is_famous
+        dto = ProductDTO.model_validate(p)
+        dto.is_famous = is_famous
+        return dto
 
     async def get_all_products(self) -> list[ProductDTO]:
         """Fetch all products in the catalog"""
         products = await self.product_repo.find_all()
-        return [ProductDTO.model_validate(p) for p in products]
+        dtos = []
+        for p in products:
+            is_famous = False
+            if self.store_repo:
+                store = await self.store_repo.find_by_id(p.store_id)
+                if store:
+                    is_famous = store.is_famous
+            dto = ProductDTO.model_validate(p)
+            dto.is_famous = is_famous
+            dtos.append(dto)
+        return dtos
 
     async def reserve_stock(self, command: ReserveInventoryCommand) -> None:
         """Reserve inventory for a customer's order. Publishes success or failure event."""
@@ -90,13 +111,25 @@ class ProductApplicationService:
         finally:
             product.clear_events()
 
+
     async def create_store(self, command: CreateStoreCommand) -> StoreDTO:
         """Register a new store in the system"""
         logger.info(f"Creating store: {command.name}")
         if not self.store_repo:
             raise RuntimeError("Store repository not configured.")
-        store = Store.create(name=command.name, webhook_url=command.webhook_url)
+        store = Store.create(name=command.name, webhook_url=command.webhook_url, is_famous=command.is_famous)
         saved = await self.store_repo.save(store)
+        
+        # Publish StoreRegisteredEvent via Transactional Outbox
+        from shared.contracts.events import StoreRegisteredEvent
+        event = StoreRegisteredEvent(
+            store_id=saved.id,
+            name=saved.name,
+            webhook_url=saved.webhook_url,
+            is_famous=saved.is_famous
+        )
+        await self.event_publisher.publish_store_registered(event)
+        
         return StoreDTO.model_validate(saved)
 
     async def get_store_by_id(self, store_id: int) -> StoreDTO | None:

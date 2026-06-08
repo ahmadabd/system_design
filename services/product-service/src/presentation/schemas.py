@@ -9,3 +9,4 @@ class CreateProductRequest(BaseModel):
 class CreateStoreRequest(BaseModel):
     name: str = Field(..., min_length=2, max_length=100)
     webhook_url: str | None = Field(default=None, max_length=255)
+    is_famous: bool = Field(default=False)

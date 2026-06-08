@@ -67,7 +67,8 @@ class SQLAlchemyStoreRepository(StoreRepository):
         return Store(
             id=db_store.id,
             name=db_store.name,
-            webhook_url=db_store.webhook_url
+            webhook_url=db_store.webhook_url,
+            is_famous=db_store.is_famous
         )
 
     async def save(self, store: Store) -> Store:
@@ -77,10 +78,12 @@ class SQLAlchemyStoreRepository(StoreRepository):
             if db_store:
                 db_store.name = store.name
                 db_store.webhook_url = store.webhook_url
+                db_store.is_famous = store.is_famous
         else:
             db_store = StoreDB(
                 name=store.name,
-                webhook_url=store.webhook_url
+                webhook_url=store.webhook_url,
+                is_famous=store.is_famous
             )
             self.session.add(db_store)
         await self.session.flush()

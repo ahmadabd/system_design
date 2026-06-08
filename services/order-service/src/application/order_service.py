@@ -35,10 +35,13 @@ class OrderApplicationService:
             if not product_details:
                 raise ValueError(f"Product with ID {command.product_id} does not exist.")
         
-        # Resolve store_id
+        # Resolve store_id and is_famous
         store_id = command.store_id
-        if store_id is None and product_details:
-            store_id = product_details.get("store_id")
+        is_famous = False
+        if product_details:
+            if store_id is None:
+                store_id = product_details.get("store_id")
+            is_famous = product_details.get("is_famous", False)
         if store_id is None:
             store_id = 1
         
@@ -48,7 +51,8 @@ class OrderApplicationService:
             product_id=command.product_id,
             quantity=command.quantity,
             total_price=command.total_price,
-            store_id=store_id
+            store_id=store_id,
+            is_famous=is_famous
         )
 
         # Persist aggregate
@@ -64,7 +68,8 @@ class OrderApplicationService:
                     product_id=event["product_id"],
                     quantity=event["quantity"],
                     total_price=event["total_price"],
-                    store_id=event["store_id"]
+                    store_id=event["store_id"],
+                    is_famous=event["is_famous"]
                 )
                 await self.event_publisher.publish_order_created(integration_event)
 
@@ -82,8 +87,18 @@ class OrderApplicationService:
             return
 
         order.confirm()
-        await self.order_repo.save(order)
+        saved = await self.order_repo.save(order)
         logger.info(f"Order {command.order_id} successfully confirmed in database!")
+
+        # Publish OrderConfirmedEvent via Transactional Outbox
+        from shared.contracts.events import OrderConfirmedEvent
+        event = OrderConfirmedEvent(
+            order_id=saved.id,
+            store_id=saved.store_id,
+            total_price=saved.total_price,
+            is_famous=saved.is_famous
+        )
+        await self.event_publisher.publish_order_confirmed(event)
 
     async def cancel_order(self, command: CancelOrderCommand) -> None:
         """Cancel the order due to inventory allocation failures"""

@@ -101,7 +101,8 @@ async def create_store(
     try:
         command = CreateStoreCommand(
             name=request_data.name,
-            webhook_url=request_data.webhook_url
+            webhook_url=request_data.webhook_url,
+            is_famous=request_data.is_famous
         )
         return await service.create_store(command)
     except ValueError as e:

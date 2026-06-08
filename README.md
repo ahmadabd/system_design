@@ -24,6 +24,7 @@ graph TD
         OrdServ["order-service:8003"]
         PayServ["payment-service:8004"]
         RepServ["reporting-service:8005"]
+        WebhookServ["webhook-service:8006"]
     end
 
     subgraph DataCaching ["Data & Caching Tier"]
@@ -32,6 +33,7 @@ graph TD
         OrdDB[("order_db: PostgreSQL")]
         PayDB[("payment_db: PostgreSQL")]
         RepDB[("reporting_db: PostgreSQL")]
+        WebhookDB[("webhook_db: PostgreSQL")]
         Redis[("redis: Redis 7")]
     end
 
@@ -62,6 +64,7 @@ graph TD
     Router -->|"/orders/*"| OrdServ
     Router -->|"/payments/*"| PayServ
     Router -->|"/reporting/*"| RepServ
+    Router -->|"/webhooks/*"| WebhookServ
 
     %% Database Connections
     UserServ -->|"db_breaker"| UserDB
@@ -69,6 +72,7 @@ graph TD
     OrdServ -->|"db_breaker"| OrdDB
     PayServ -->|"db_breaker"| PayDB
     RepServ -->|"db_breaker"| RepDB
+    WebhookServ -->|"db_breaker"| WebhookDB
 
     %% Idempotency Cache Connections
     UserServ -->|"Idempotency Cache"| Redis
@@ -76,6 +80,7 @@ graph TD
     OrdServ -->|"Idempotency Cache"| Redis
     PayServ -->|"Idempotency Cache"| Redis
     RepServ -->|"Idempotency Cache"| Redis
+    WebhookServ -->|"Idempotency Cache"| Redis
 
     %% Kafka Event Broker Connections
     UserServ -.->|"kafka_breaker"| Kafka
@@ -83,12 +88,14 @@ graph TD
     OrdServ -.->|"kafka_breaker"| Kafka
     PayServ -.->|"kafka_breaker"| Kafka
     RepServ -.->|"kafka_breaker"| Kafka
+    WebhookServ -.->|"kafka_breaker"| Kafka
 
     Kafka -.->|"Event Subscription / Inbox Pattern"| UserServ
     Kafka -.->|"Event Subscription / Inbox Pattern"| ProdServ
     Kafka -.->|"Event Subscription / Inbox Pattern"| OrdServ
     Kafka -.->|"Event Subscription / Inbox Pattern"| PayServ
     Kafka -.->|"Event Subscription / Inbox Pattern"| RepServ
+    Kafka -.->|"Event Subscription / Inbox Pattern"| WebhookServ
 
     %% Observability Connections
     UserServ -->|"OTel Traces & Metrics"| OTel
@@ -96,6 +103,7 @@ graph TD
     OrdServ -->|"OTel Traces & Metrics"| OTel
     PayServ -->|"OTel Traces & Metrics"| OTel
     RepServ -->|"OTel Traces & Metrics"| OTel
+    WebhookServ -->|"OTel Traces & Metrics"| OTel
     Traefik -->|"OTel Traces & Metrics"| OTel
 
     OTel -->|"Traces"| JG
@@ -163,6 +171,55 @@ Implemented via a custom async-native `AsyncCircuitBreaker` wrapper (`shared/com
   - **Unreplayed DLQ Backlog (Messages)**: Monitored via consumer group lag (`kafka_consumergroup_lag`) of the replay group on `.deadletter` topics. This value automatically drops to 0 when replayed.
   - **Consumer Callback Execution Time (Avg)**: Computes the average execution time of consumer callbacks to detect lag bottlenecks.
 
+### J. Resilient Webhook Delivery Service (Store Webhooks)
+- **Zero-Lookup Materialized View**: The `webhook-service` subscribes to `store.registered` events and materializes store webhook configurations locally in a PostgreSQL read model database (`materialized_stores`). When processing `order.confirmed` events, it resolves target webhook destinations without making synchronous API gateway requests to `product-service`.
+- **Two-Tiered Partition Isolation (Famous vs. Small Stores)**:
+  To provide absolute isolation between different stores, we provision **8 partitions** on the `order.confirmed` topic and segment traffic by store popularity:
+  * **Famous Stores (`is_famous = True`)**: Routed dynamically to dedicated partitions `0 to 3` using `store_id % 4`.
+  * **Small Stores (`is_famous = False`)**: Routed dynamically to shared partitions `4 to 7` using `4 + (store_id % 4)`.
+- **Per-Store Circuit Breaker & Outage Routing Scenarios**:
+  Each store is assigned an isolated in-memory circuit breaker. If a webhook target fails continuously (e.g., HTTP `5xx` or timeouts), the breaker trips to `OPEN`, triggering one of two partition scenarios:
+  * **Famous Store Outage Scenario (Dedicated Partitions)**:
+    - The Kafka consumer **pauses** the specific dedicated partition (`TopicPartition`) assigned to the store.
+    - Because the partition is dedicated, pausing it applies backpressure to the broker for this store's events only, leaving all other famous and small stores completely unaffected.
+    - A background health probe pings the store's webhook. Once healthy, the breaker resets to `CLOSED`, the consumer **resumes** partition polling, and the failing messages (safely seeked back to their original offsets) are re-read and delivered.
+  * **Small Store Outage Scenario (Shared Partitions)**:
+    - The Kafka consumer **does not pause** the partition (since pausing it would cause head-of-line blocking for other healthy small stores sharing the partition).
+    - Instead, the consumer fast-fails the event directly to the `webhook.deadletter` DLQ and commits the partition offset, keeping the shared pipeline flowing.
+- **Dead Letter Queue (DLQ) Routing**: If a webhook target throws a non-retriable exception (e.g., `400 Bad Request` or `404 Not Found`), the message skips retries and circuit breaking, and is immediately archived in the `webhook.deadletter` Kafka topic.
+
+#### Webhook Service Resilient Flow Diagram:
+
+```mermaid
+graph TD
+    OC_Event["order.confirmed Event"] --> Consumer["Kafka Consumer Loop"]
+    Consumer --> InboxCheck{"Inbox Deduplication?<br/>(idempotent_consumers)"}
+    InboxCheck -- "Yes (Duplicate)" --> Ack["Commit Offset & Skip"]
+    InboxCheck -- "No" --> StoreFetch["Query Local Materialized Store Table<br/>(materialized_stores)"]
+    
+    StoreFetch --> StoreExist{"Store Webhook Configured?"}
+    StoreExist -- "No" --> DLQ["Send to DLQ<br/>(webhook.deadletter)"] --> Ack
+    StoreExist -- "Yes" --> BreakerCheck{"Circuit Breaker State?"}
+    
+    BreakerCheck -- "OPEN" --> FamousCheckOpen{"Is Famous Store?"}
+    FamousCheckOpen -- "Yes" --> PausePart["Pause Kafka Partition<br/>Start Health Probe"] --> SeekBack["Seek Back to Message Offset"]
+    FamousCheckOpen -- "No" --> DLQ
+    
+    BreakerCheck -- "CLOSED / HALF-OPEN" --> Dispatch["POST Dispatch to Store Webhook"]
+    
+    Dispatch --> DispatchSuccess{"HTTP Status < 400?"}
+    DispatchSuccess -- "Yes (2xx)" --> LogSuccess["Log Success in DB"] --> Ack
+    DispatchSuccess -- "No (5xx / Timeout)" --> RecordFail["Log Attempt Fail in DB"] --> BreakerTrip{"Threshold Met?<br/>(3 failures)"}
+    
+    BreakerTrip -- "Yes" --> FamousCheckTrip{"Is Famous Store?"}
+    FamousCheckTrip -- "Yes" --> TripOpen["Trip Breaker to OPEN"] --> PausePart
+    FamousCheckTrip -- "No" --> TripOpenSmall["Trip Breaker to OPEN"] --> DLQ
+    
+    BreakerTrip -- "No" --> SleepRetry["Sleep 2s & Seek Back"]
+    
+    DispatchSuccess -- "No (4xx Client Error)" --> RecordFailNonRetriable["Log Non-Retriable Fail in DB"] --> DLQ
+```
+
 ---
 
 ## 🏢 3. DDD Bounded Contexts & Clean Architecture
@@ -226,7 +283,11 @@ system_design/
 │   │   ├── Dockerfile
 │   │   ├── requirements.txt
 │   │   └── src/
-│   └── reporting-service/
+│   ├── reporting-service/
+│   │   ├── Dockerfile
+│   │   ├── requirements.txt
+│   │   └── src/
+│   └── webhook-service/
 │       ├── Dockerfile
 │       ├── requirements.txt
 │       └── src/

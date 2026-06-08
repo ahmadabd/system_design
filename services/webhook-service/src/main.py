@@ -3,26 +3,21 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from sqlalchemy import text
 from shared.common.database import Base
-from shared.common.messaging import KafkaManager
 from shared.common.observability import setup_observability, register_graceful_shutdown
 from src.infrastructure.config import settings
 from src.infrastructure.db_setup import db
-from src.presentation.api import router, mq_manager
-from src.adapter.messaging_sub import OrderMessagingSubscriber
-from shared.common.outbox import OutboxPublisher
+from src.presentation.api import router
+from src.adapter.messaging_sub import WebhookMessagingSubscriber
 
-logger = logging.getLogger("OrderApplication")
+logger = logging.getLogger("WebhookApplication")
 
-# Separate independent broker connection for background consumer threads
-background_mq_manager = KafkaManager(settings.KAFKA_BOOTSTRAP_SERVERS)
-
-# Initialize outbox publisher background worker
-outbox_publisher = OutboxPublisher(db, mq_manager)
+# Initialize background messaging subscriber
+subscriber = WebhookMessagingSubscriber(settings.KAFKA_BOOTSTRAP_SERVERS, db)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifecycle coordinator establishing background subscription listeners, database pools, and idempotency tables"""
-    logger.info("Initializing Order Service database schema...")
+    """Lifecycle coordinator establishing background subscription listeners and database schema initialization"""
+    logger.info("Initializing Webhook Service database schema...")
     # Map SQLAlchemy tables to PostgreSQL DB with connection retries
     await db.initialize_schema(Base, logger)
 
@@ -35,38 +30,32 @@ async def lifespan(app: FastAPI):
                 processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
+        # Ensure column is_famous exists in materialized_stores
         await conn.execute(text("""
-            ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_famous BOOLEAN DEFAULT FALSE
+            ALTER TABLE materialized_stores ADD COLUMN IF NOT EXISTS is_famous BOOLEAN DEFAULT FALSE
         """))
-    logger.info("Idempotent consumers table and schema migrations initialized successfully.")
+    logger.info("Idempotent consumers table and migrations initialized successfully.")
 
-    # Start Outbox Publisher background worker
-    outbox_publisher.start()
-
-    # Open persistent Kafka connection for background subscriber listener
-    await background_mq_manager.connect()
-    subscriber = OrderMessagingSubscriber(background_mq_manager)
-    await subscriber.start_listening()
+    # Start Kafka consumers
+    await subscriber.start()
 
     yield
 
-    logger.info("Tearing down Order Service resources in lifespan context...")
-    await outbox_publisher.stop()
+    logger.info("Tearing down Webhook Service resources in lifespan context...")
+    await subscriber.stop()
     await db.close()
-    await mq_manager.close()
-    await background_mq_manager.close()
-    logger.info("Order Service lifespan teardown complete.")
+    logger.info("Webhook Service lifespan teardown complete.")
 
 from fastapi import Request, status
 from fastapi.responses import JSONResponse
 from shared.common.resilience import CircuitBreakerOpenException
 
 app = FastAPI(
-    title="Order Bounded Context Service",
-    description="Vaughn Vernon 5-Layer DDD E-Commerce Platform",
+    title="Webhook Bounded Context Service",
+    description="Resilient Outbound Store Webhook Delivery Context",
     version="1.0.0",
     lifespan=lifespan,
-    root_path="/orders"  # Prefix-stripped path routing for Traefik API Gateway Swagger docs
+    root_path="/webhooks"  # Prefix-stripped path routing for Traefik API Gateway
 )
 
 @app.exception_handler(CircuitBreakerOpenException)
@@ -82,12 +71,12 @@ setup_observability(app, settings.SERVICE_NAME)
 # Register cooperative graceful SIGTERM/SIGINT shutdown with 3s traffic draining
 register_graceful_shutdown(
     app, 
-    [outbox_publisher.stop, db.close, mq_manager.close, background_mq_manager.close]
+    [subscriber.stop, db.close]
 )
 
 @app.get("/health", tags=["System"])
 async def health_check():
     """System health check endpoint"""
-    return {"status": "healthy", "service": "order-service"}
+    return {"status": "healthy", "service": "webhook-service"}
 
 app.include_router(router)

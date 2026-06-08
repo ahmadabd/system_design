@@ -26,6 +26,7 @@ class OrderCreatedEvent(DomainEvent):
     quantity: int
     total_price: float
     store_id: int
+    is_famous: bool = False
 
 class InventoryReservedEvent(DomainEvent):
     event_type: str = "InventoryReserved"
@@ -51,4 +52,19 @@ class PaymentFailedEvent(DomainEvent):
     order_id: int
     amount: float
     reason: str
+
+class StoreRegisteredEvent(DomainEvent):
+    event_type: str = "StoreRegistered"
+    store_id: int
+    name: str
+    webhook_url: str | None
+    is_famous: bool = False
+
+class OrderConfirmedEvent(DomainEvent):
+    event_type: str = "OrderConfirmed"
+    order_id: int
+    store_id: int
+    total_price: float
+    is_famous: bool = False
+
 

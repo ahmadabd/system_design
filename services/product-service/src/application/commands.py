@@ -14,3 +14,4 @@ class ReserveInventoryCommand(BaseModel):
 class CreateStoreCommand(BaseModel):
     name: str
     webhook_url: str | None = None
+    is_famous: bool = False

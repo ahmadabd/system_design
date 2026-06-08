@@ -61,11 +61,35 @@ class KafkaManager:
                 )
                 await self.producer.start()
                 logger.info("Successfully connected to Kafka and started Producer!")
+                try:
+                    await self.ensure_topics_exist(["order.created", "order.confirmed", "store.registered"], num_partitions=8)
+                except Exception as topics_err:
+                    logger.warning(f"Failed to ensure topics exist during startup: {topics_err}")
                 return
             except Exception as e:
                 logger.warning(f"Failed to connect to Kafka: {e}. Retrying in {delay}s...")
                 await asyncio.sleep(delay)
         raise ConnectionError("Could not establish connection to Kafka after multiple retries.")
+
+    async def ensure_topics_exist(self, topics: List[str], num_partitions: int = 8) -> None:
+        """Ensure that the given Kafka topics exist with the specified number of partitions"""
+        from aiokafka.admin import AIOKafkaAdminClient, NewTopic
+        admin = AIOKafkaAdminClient(bootstrap_servers=self.bootstrap_servers)
+        try:
+            await admin.start()
+            existing_topics = await admin.list_topics()
+            new_topics = []
+            for topic in topics:
+                if topic not in existing_topics:
+                    logger.info(f"Creating topic '{topic}' with {num_partitions} partitions...")
+                    new_topics.append(NewTopic(name=topic, num_partitions=num_partitions, replication_factor=1))
+            if new_topics:
+                await admin.create_topics(new_topics=new_topics)
+                logger.info(f"Successfully created topics: {[t.name for t in new_topics]}")
+        except Exception as e:
+            logger.warning(f"Failed to ensure Kafka topics exist via Admin Client: {e}")
+        finally:
+            await admin.close()
 
     async def close(self) -> None:
         """Safely stop Kafka producer and background consumer tasks"""
@@ -97,7 +121,26 @@ class KafkaManager:
         
         async def _do_publish():
             topic = routing_key
-            key = str(event_data.get("order_id") or event_data.get("user_id") or "").encode("utf-8") or None
+            
+            # Extract store partitioning metadata
+            store_id = event_data.get("store_id")
+            is_famous = event_data.get("is_famous", False)
+            partition = None
+            
+            if store_id is not None:
+                try:
+                    store_id_int = int(store_id)
+                except (ValueError, TypeError):
+                    store_id_int = hash(str(store_id))
+                
+                if is_famous:
+                    # Partitions 0-3 are dedicated to famous stores
+                    partition = store_id_int % 4
+                else:
+                    # Partitions 4-7 are shared for small/non-famous stores
+                    partition = 4 + (store_id_int % 4)
+            
+            key = str(event_data.get("store_id") or event_data.get("order_id") or event_data.get("user_id") or "").encode("utf-8") or None
             
             # Start an active PRODUCER span for visual timeline tracking in Jaeger
             from opentelemetry import trace
@@ -110,6 +153,8 @@ class KafkaManager:
                 span.set_attribute("messaging.destination", topic)
                 if key:
                     span.set_attribute("messaging.kafka.partition_key", key.decode("utf-8"))
+                if partition is not None:
+                    span.set_attribute("messaging.kafka.partition", partition)
                 
                 # Inject the active PRODUCER span context into the headers
                 headers_dict = {}
@@ -122,10 +167,10 @@ class KafkaManager:
                     for k, v in headers_dict.items()
                 ]
                 
-                await self.producer.send_and_wait(topic, value=event_data, key=key, headers=kafka_headers)
+                await self.producer.send_and_wait(topic, value=event_data, key=key, partition=partition, headers=kafka_headers)
                 if messaging_kafka_messages_total:
                     messaging_kafka_messages_total.labels(topic=topic, operation="send").inc()
-                logger.info(f"Published message to Kafka topic '{topic}' with key '{key.decode() if key else 'None'}'")
+                logger.info(f"Published message to Kafka topic '{topic}' with key '{key.decode() if key else 'None'}' on partition {partition}")
 
         await self.kafka_breaker.call(_do_publish)
 

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float
+from sqlalchemy import Column, Integer, String, Float, Boolean
 from shared.common.database import Base
 
 class OrderDB(Base):
@@ -12,3 +12,4 @@ class OrderDB(Base):
     total_price = Column(Float, nullable=False)
     status = Column(String(50), nullable=False, default="PENDING")
     store_id = Column(Integer, nullable=False, default=1)
+    is_famous = Column(Boolean, nullable=False, default=False)

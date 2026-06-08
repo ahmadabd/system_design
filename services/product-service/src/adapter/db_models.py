@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, Boolean
 from shared.common.database import Base
 
 class StoreDB(Base):
@@ -8,6 +8,7 @@ class StoreDB(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), nullable=False)
     webhook_url = Column(String(255), nullable=True)
+    is_famous = Column(Boolean, nullable=False, default=False)
 
 class ProductDB(Base):
     """SQLAlchemy model for products table"""

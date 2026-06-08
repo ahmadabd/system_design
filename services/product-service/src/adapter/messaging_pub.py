@@ -29,3 +29,13 @@ class ProductMessagingPublisher:
         logger.info(f"Writing inventory failed event to outbox for order_id: {event.order_id}")
         await save_to_outbox(self.session, routing_key, event_dict)
 
+    async def publish_store_registered(self, event) -> None:
+        """Queue a StoreRegisteredEvent into the database outbox"""
+        event_dict = event.model_dump()
+        event_dict["metadata"]["timestamp"] = event.metadata.timestamp.isoformat()
+        
+        routing_key = "store.registered"
+        logger.info(f"Writing store registered event to outbox for store_id: {event.store_id}")
+        await save_to_outbox(self.session, routing_key, event_dict)
+
+

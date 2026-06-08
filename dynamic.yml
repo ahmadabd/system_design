@@ -50,6 +50,16 @@ http:
         - "strip-reporting"
       service: reporting-service
 
+    webhook-router:
+      rule: "PathPrefix(`/webhooks`)"
+      entryPoints:
+        - web
+      middlewares:
+        - "rate-limit"
+        - "load-shedding"
+        - "strip-webhooks"
+      service: webhook-service
+
 
   middlewares:
     load-shedding:
@@ -91,6 +101,11 @@ http:
       stripPrefix:
         prefixes:
           - "/reporting"
+
+    strip-webhooks:
+      stripPrefix:
+        prefixes:
+          - "/webhooks"
 
 
   services:
@@ -138,3 +153,12 @@ http:
           timeout: 1s
         servers:
           - url: "http://reporting-service:8005"
+
+    webhook-service:
+      loadBalancer:
+        healthCheck:
+          path: /health
+          interval: 2s
+          timeout: 1s
+        servers:
+          - url: "http://webhook-service:8006"

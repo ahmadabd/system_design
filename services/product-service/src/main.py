@@ -35,10 +35,14 @@ async def lifespan(app: FastAPI):
                 processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
+        # Alter table to add column if not exists
+        await conn.execute(text("""
+            ALTER TABLE stores ADD COLUMN IF NOT EXISTS is_famous BOOLEAN DEFAULT FALSE
+        """))
         # Seed default store (ID 1)
         await conn.execute(text("""
-            INSERT INTO stores (id, name, webhook_url)
-            VALUES (1, 'Default Store', 'http://localhost/webhooks/default')
+            INSERT INTO stores (id, name, webhook_url, is_famous)
+            VALUES (1, 'Default Store', 'http://localhost/webhooks/default', FALSE)
             ON CONFLICT (id) DO NOTHING
         """))
         # Sync the sequence so next insert starts at 2
