@@ -3,6 +3,18 @@ from shared.common.resilience import AsyncCircuitBreaker
 
 logger = logging.getLogger("WebhookResilience")
 
+class WebhookError(Exception):
+    """Base exception for all webhook related errors"""
+    pass
+
+class RetriableWebhookError(WebhookError):
+    """Exception indicating a transient, retriable webhook dispatch failure"""
+    pass
+
+class NonRetriableWebhookError(WebhookError):
+    """Exception indicating a permanent, non-retriable webhook dispatch failure"""
+    pass
+
 class StoreCircuitBreakerRegistry:
     """Manages separate AsyncCircuitBreaker instances mapped per store_id"""
     def __init__(self, failure_threshold: int = 3, recovery_timeout: float = 15.0):
@@ -17,7 +29,8 @@ class StoreCircuitBreakerRegistry:
             self.breakers[store_id] = AsyncCircuitBreaker(
                 name=name,
                 failure_threshold=self.failure_threshold,
-                recovery_timeout=self.recovery_timeout
+                recovery_timeout=self.recovery_timeout,
+                expected_exceptions=(RetriableWebhookError,)
             )
         return self.breakers[store_id]
 

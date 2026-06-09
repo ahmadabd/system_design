@@ -4,7 +4,8 @@ import logging
 import datetime
 from aiokafka import AIOKafkaConsumer, TopicPartition
 from src.adapter.repository import SQLAlchemyWebhookRepository
-from src.application.resilience import breaker_registry
+from src.application.resilience import breaker_registry, RetriableWebhookError, NonRetriableWebhookError
+from shared.common.idempotency import check_and_register_event
 
 logger = logging.getLogger("WebhookMessagingSubscriber")
 
@@ -164,8 +165,22 @@ class WebhookMessagingSubscriber:
             logger.error(f"Discarding invalid store.registered payload: {payload}")
             return True
 
+        event_id = payload.get("metadata", {}).get("event_id", f"store-registered-fallback-{store_id}")
+
         async with self.db._session_maker() as session:
             try:
+                # 1. Deduplication Check (Inbox Pattern)
+                # Prepend 'mat-' to event_id for CQRS read model materialization
+                mat_event_id = f"mat-{event_id}"
+                is_duplicate = await check_and_register_event(session, mat_event_id)
+                if is_duplicate:
+                    logger.warning(
+                        f"Inbox Pattern: Duplicate 'store.registered' event detected (ID: {event_id}). "
+                        f"Skipping materialization to ensure idempotency."
+                    )
+                    await session.commit()
+                    return True
+
                 repo = SQLAlchemyWebhookRepository(session)
                 await repo.save_materialized_store(store_id, name, webhook_url, is_famous=is_famous)
                 await session.commit()
@@ -186,110 +201,176 @@ class WebhookMessagingSubscriber:
             logger.error(f"Discarding invalid order.confirmed event payload: {payload}")
             return True
 
-        # 1. Resolve store metadata locally (Zero HTTP REST calls to product-service)
+        event_id = payload.get("metadata", {}).get("event_id", f"order-confirmed-fallback-{order_id}")
+
         async with self.db._session_maker() as session:
-            repo = SQLAlchemyWebhookRepository(session)
-            store = await repo.find_materialized_store(store_id)
-
-        if not store or not store.webhook_url:
-            logger.warning(f"Store ID {store_id} webhook details not materialized. Routing to DLQ.")
-            await self._route_to_dlq(payload, "StoreNotMaterializedException", f"No webhook configured for store {store_id}")
-            return True
-
-        webhook_url = store.webhook_url
-        breaker = breaker_registry.get_breaker(store_id)
-
-        # 2. Check if circuit breaker is currently open
-        if breaker.state == "OPEN":
-            if store.is_famous:
-                logger.warning(f"Webhook dispatch for famous store {store_id} blocked: Circuit is OPEN. Pausing partition {tp}.")
-                self._pause_partition_and_start_probe(store_id, tp, webhook_url)
-                return False
-            else:
-                logger.warning(f"Webhook dispatch for small store {store_id} blocked: Circuit is OPEN. Fast-failing to DLQ without pausing partition.")
-                await self._route_to_dlq(payload, "CircuitBreakerOpenException", f"Circuit open for small store {store_id}")
-                return True
-
-        attempt = 1
-        success = False
-        response_status = None
-        response_body = None
-
-        async def _do_dispatch():
-            nonlocal response_status, response_body
-            import httpx
-            
-            headers = {"Content-Type": "application/json"}
-            from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
-            TraceContextTextMapPropagator().inject(headers)
-
-            async with httpx.AsyncClient() as client:
-                res = await client.post(
-                    webhook_url,
-                    json={
-                        "event_type": "OrderConfirmed",
-                        "order_id": order_id,
-                        "store_id": store_id,
-                        "total_price": total_price
-                    },
-                    headers=headers,
-                    timeout=5.0
-                )
-                response_status = res.status_code
-                response_body = res.text
-                res.raise_for_status()
-
-        # 3. Call HTTP Dispatch inside the circuit breaker wrapper
-        import time
-        start_time = time.perf_counter()
-        try:
-            from opentelemetry import trace
-            from opentelemetry.trace import StatusCode
-            tracer = trace.get_tracer("webhook-dispatcher")
-            with tracer.start_as_current_span(
-                name=f"webhook.dispatch {store_id}",
-                kind=trace.SpanKind.CLIENT
-            ) as dispatch_span:
-                dispatch_span.set_attribute("http.url", webhook_url)
-                dispatch_span.set_attribute("http.method", "POST")
-                dispatch_span.set_attribute("webhook.store_id", str(store_id))
-                dispatch_span.set_attribute("webhook.order_id", str(order_id))
-                dispatch_span.set_attribute("webhook.is_famous", bool(store.is_famous))
+            try:
+                repo = SQLAlchemyWebhookRepository(session)
                 
-                try:
-                    await breaker.call(_do_dispatch)
-                    success = True
-                    logger.info(f"Webhook successfully delivered to Store {store_id} for Order {order_id}!")
+                # 1. Deduplication Check (Inbox Pattern)
+                is_duplicate = await check_and_register_event(session, event_id)
+                if is_duplicate:
+                    logger.warning(
+                        f"Inbox Pattern: Duplicate 'order.confirmed' event detected (ID: {event_id}). "
+                        f"Skipping to ensure idempotency."
+                    )
+                    await session.commit()
+                    return True
+
+                # 2. Resolve store metadata locally (Zero HTTP REST calls to product-service)
+                store = await repo.find_materialized_store(store_id)
+                if not store or not store.webhook_url:
+                    logger.warning(f"Store ID {store_id} webhook details not materialized. Routing to DLQ.")
+                    await self._route_to_dlq(payload, "StoreNotMaterializedException", f"No webhook configured for store {store_id}")
+                    await session.commit()
+                    return True
+
+                webhook_url = store.webhook_url
+                breaker = breaker_registry.get_breaker(store_id)
+
+                # 3. Check if circuit breaker is currently open
+                if breaker.state == "OPEN":
+                    if store.is_famous:
+                        logger.warning(f"Webhook dispatch for famous store {store_id} blocked: Circuit is OPEN. Pausing partition {tp}.")
+                        self._pause_partition_and_start_probe(store_id, tp, webhook_url)
+                        await session.rollback()
+                        return False
+                    else:
+                        logger.warning(f"Webhook dispatch for small store {store_id} blocked: Circuit is OPEN. Fast-failing to DLQ without pausing partition.")
+                        await self._route_to_dlq(payload, "CircuitBreakerOpenException", f"Circuit open for small store {store_id}")
+                        await session.commit()
+                        return True
+
+                attempt = 1
+                success = False
+                response_status = None
+                response_body = None
+
+                async def _do_dispatch():
+                    nonlocal response_status, response_body
+                    import httpx
                     
-                    # Record success metrics
+                    headers = {"Content-Type": "application/json"}
+                    from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+                    TraceContextTextMapPropagator().inject(headers)
+
+                    async with httpx.AsyncClient() as client:
+                        try:
+                            res = await client.post(
+                                webhook_url,
+                                json={
+                                    "event_type": "OrderConfirmed",
+                                    "order_id": order_id,
+                                    "store_id": store_id,
+                                    "total_price": total_price
+                                },
+                                headers=headers,
+                                timeout=5.0
+                            )
+                            response_status = res.status_code
+                            response_body = res.text
+                            res.raise_for_status()
+                        except Exception as err:
+                            from shared.common.resilience import is_retriable_exception
+                            if is_retriable_exception(err):
+                                raise RetriableWebhookError(str(err)) from err
+                            else:
+                                raise NonRetriableWebhookError(str(err)) from err
+
+                # 4. Call HTTP Dispatch inside the circuit breaker wrapper
+                import time
+                start_time = time.perf_counter()
+                try:
+                    from opentelemetry import trace
+                    from opentelemetry.trace import StatusCode
+                    tracer = trace.get_tracer("webhook-dispatcher")
+                    with tracer.start_as_current_span(
+                        name=f"webhook.dispatch {store_id}",
+                        kind=trace.SpanKind.CLIENT
+                    ) as dispatch_span:
+                        dispatch_span.set_attribute("http.url", webhook_url)
+                        dispatch_span.set_attribute("http.method", "POST")
+                        dispatch_span.set_attribute("webhook.store_id", str(store_id))
+                        dispatch_span.set_attribute("webhook.order_id", str(order_id))
+                        dispatch_span.set_attribute("webhook.is_famous", bool(store.is_famous))
+                        
+                        try:
+                            await breaker.call(_do_dispatch)
+                            success = True
+                            logger.info(f"Webhook successfully delivered to Store {store_id} for Order {order_id}!")
+                            
+                            # Record success metrics
+                            if webhook_delivery_attempts_total:
+                                webhook_delivery_attempts_total.labels(store_id=str(store_id), status_code=str(response_status or 200), success="true").inc()
+                            if webhook_delivery_duration_seconds:
+                                duration = time.perf_counter() - start_time
+                                webhook_delivery_duration_seconds.labels(store_id=str(store_id)).observe(duration)
+                            
+                            dispatch_span.set_attribute("http.status_code", response_status or 200)
+                            dispatch_span.set_status(StatusCode.OK)
+                        except Exception as err:
+                            dispatch_span.set_attribute("http.status_code", response_status or 0)
+                            dispatch_span.set_status(StatusCode.ERROR, str(err))
+                            raise err
+                except Exception as err:
+                    logger.warning(f"Webhook delivery failed for Store {store_id}: {err}")
+                    
+                    # Record failure metrics
                     if webhook_delivery_attempts_total:
-                        webhook_delivery_attempts_total.labels(store_id=str(store_id), status_code=str(response_status or 200), success="true").inc()
+                        webhook_delivery_attempts_total.labels(store_id=str(store_id), status_code=str(response_status or 0), success="false").inc()
                     if webhook_delivery_duration_seconds:
                         duration = time.perf_counter() - start_time
                         webhook_delivery_duration_seconds.labels(store_id=str(store_id)).observe(duration)
-                    
-                    dispatch_span.set_attribute("http.status_code", response_status or 200)
-                    dispatch_span.set_status(StatusCode.OK)
-                except Exception as err:
-                    dispatch_span.set_attribute("http.status_code", response_status or 0)
-                    dispatch_span.set_status(StatusCode.ERROR, str(err))
-                    raise err
-        except Exception as err:
-            logger.warning(f"Webhook delivery failed for Store {store_id}: {err}")
-            
-            # Record failure metrics
-            if webhook_delivery_attempts_total:
-                webhook_delivery_attempts_total.labels(store_id=str(store_id), status_code=str(response_status or 0), success="false").inc()
-            if webhook_delivery_duration_seconds:
-                duration = time.perf_counter() - start_time
-                webhook_delivery_duration_seconds.labels(store_id=str(store_id)).observe(duration)
 
-            from shared.common.resilience import is_retriable_exception
-            retriable = is_retriable_exception(err)
+                    from shared.common.resilience import is_retriable_exception
+                    if isinstance(err, NonRetriableWebhookError):
+                        retriable = False
+                    elif isinstance(err, RetriableWebhookError):
+                        retriable = True
+                    else:
+                        retriable = is_retriable_exception(err)
 
-            # Audit failure in PostgreSQL log
-            async with self.db._session_maker() as session:
-                repo = SQLAlchemyWebhookRepository(session)
+                    # Audit failure in PostgreSQL log
+                    await repo.log_delivery(
+                        order_id=order_id,
+                        store_id=store_id,
+                        event_type="OrderConfirmed",
+                        webhook_url=webhook_url,
+                        request_payload=payload,
+                        response_status=response_status,
+                        response_body=response_body[:1000] if response_body else str(err),
+                        attempt=attempt,
+                        success=False
+                    )
+
+                    if not retriable:
+                        # Non-retriable failure: route to DLQ, commit transaction to save inbox and audit log
+                        logger.error(f"Non-retriable failure routing store webhook. Moving to DLQ.")
+                        await self._route_to_dlq(payload, err.__class__.__name__, str(err))
+                        await session.commit()
+                        return True
+
+                    # Retriable failure: check if circuit breaker tripped
+                    if breaker.state == "OPEN":
+                        if store.is_famous:
+                            logger.error(f"Circuit breaker tripped to OPEN for famous Store {store_id}! Pausing partition {tp}.")
+                            self._pause_partition_and_start_probe(store_id, tp, webhook_url)
+                            # Rollback transaction so inbox check isn't persisted (can be retried)
+                            await session.rollback()
+                            return False
+                        else:
+                            logger.error(f"Circuit breaker tripped to OPEN for small Store {store_id}! Fast-failing to DLQ without pausing partition.")
+                            await self._route_to_dlq(payload, err.__class__.__name__, f"Circuit breaker tripped to OPEN: {str(err)}")
+                            await session.commit()
+                            return True
+
+                    # Circuit is still closed, rollback transaction (so inbox check is retried) and seek back
+                    logger.warning(f"Store {store_id} webhook transient failure. Circuit still CLOSED. Seeking back.")
+                    await session.rollback()
+                    await asyncio.sleep(2.0)
+                    return False
+
+                # 5. Audit success in PostgreSQL log
                 await repo.log_delivery(
                     order_id=order_id,
                     store_id=store_id,
@@ -297,51 +378,16 @@ class WebhookMessagingSubscriber:
                     webhook_url=webhook_url,
                     request_payload=payload,
                     response_status=response_status,
-                    response_body=response_body[:1000] if response_body else str(err),
+                    response_body=response_body[:1000] if response_body else "SUCCESS",
                     attempt=attempt,
-                    success=False
+                    success=True
                 )
                 await session.commit()
-
-            if not retriable:
-                # 4xx or validation error -> skip retries, route to DLQ, and ACK message
-                logger.error(f"Non-retriable failure routing store webhook. Moving to DLQ.")
-                await self._route_to_dlq(payload, err.__class__.__name__, str(err))
                 return True
-
-            # Retriable failure: check if circuit breaker tripped
-            if breaker.state == "OPEN":
-                if store.is_famous:
-                    logger.error(f"Circuit breaker tripped to OPEN for famous Store {store_id}! Pausing partition {tp}.")
-                    self._pause_partition_and_start_probe(store_id, tp, webhook_url)
-                    return False
-                else:
-                    logger.error(f"Circuit breaker tripped to OPEN for small Store {store_id}! Fast-failing to DLQ without pausing partition.")
-                    await self._route_to_dlq(payload, err.__class__.__name__, f"Circuit breaker tripped to OPEN: {str(err)}")
-                    return True
-
-            # Circuit is still closed, seek back and try again shortly
-            logger.warning(f"Store {store_id} webhook transient failure. Circuit still CLOSED. Seeking back.")
-            await asyncio.sleep(2.0)
-            return False
-
-        # 4. Audit success in PostgreSQL log
-        async with self.db._session_maker() as session:
-            repo = SQLAlchemyWebhookRepository(session)
-            await repo.log_delivery(
-                order_id=order_id,
-                store_id=store_id,
-                event_type="OrderConfirmed",
-                webhook_url=webhook_url,
-                request_payload=payload,
-                response_status=response_status,
-                response_body=response_body[:1000] if response_body else "SUCCESS",
-                attempt=attempt,
-                success=True
-            )
-            await session.commit()
-
-        return True
+            except Exception as db_err:
+                logger.error(f"Database or system failure processing order.confirmed: {db_err}", exc_info=True)
+                await session.rollback()
+                return False
 
     def _pause_partition_and_start_probe(self, store_id: int, tp: TopicPartition, webhook_url: str) -> None:
         """Pause message retrieval for the TopicPartition and initiate background recovery health checks"""
