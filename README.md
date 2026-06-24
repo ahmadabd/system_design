@@ -11,6 +11,7 @@ graph TD
     %% Node Definitions
     Client["Client / Locust Load Tester"]
     Keepalived{"Keepalived Master/Backup VRRP"}
+    PartnerWebhook["Partner Store Webhook Endpoint"]
 
     subgraph GatewayRouting ["API Gateway Routing (Traefik)"]
         Traefik["Traefik Master Load Balancer"]
@@ -96,6 +97,9 @@ graph TD
     Kafka -.->|"Event Subscription / Inbox Pattern"| PayServ
     Kafka -.->|"Event Subscription / Inbox Pattern"| RepServ
     Kafka -.->|"Event Subscription / Inbox Pattern"| WebhookServ
+
+    %% Webhook Outbound Connection
+    WebhookServ -->|"POST Resilient Webhook Dispatch"| PartnerWebhook
 
     %% Observability Connections
     UserServ -->|"OTel Traces & Metrics"| OTel
@@ -312,30 +316,50 @@ Our microservice architecture cleanly separates state mutation (Commands) from s
 ```mermaid
 flowchart TD
     %% Node Definitions
-    Kafka[("Topic: order.created")]
+    KafkaOrderCreated[("Topic: order.created")]
+    KafkaOrderConfirmed[("Topic: order.confirmed")]
+    KafkaStoreRegistered[("Topic: store.registered")]
 
     subgraph Order Context [Order Bounded Context]
         CMD[1. POST /orders] -->|Write Model| OrderDB[("Order DB: PostgreSQL")]
+        ConfirmCMD[Saga Confirm] -->|Update status: CONFIRMED| OrderDB
+    end
+
+    subgraph Product Context [Product Bounded Context]
+        StoreCMD[2. POST /products/stores] -->|Write Model| ProductDB[("Product DB: PostgreSQL")]
     end
 
     subgraph Payment Context [Payment Bounded Context]
         Sub[Kafka Consumer] -->|Write local projection| ReadTable[("materialized_orders Read Model")]
         
         InvEvent[Event: inventory.reserved] -->|Consume| PayProc[process_payment]
-        PayProc -->|2. Local DB Query| ReadTable
+        PayProc -->|3. Local DB Query| ReadTable
+    end
+
+    subgraph Webhook Context [Webhook Bounded Context]
+        WebSubStore[Kafka Consumer] -->|Write store webhook config| WebhookReadTable[("materialized_stores Read Model")]
+        
+        ConfirmEvent[Event: order.confirmed] -->|Consume| WebhookProc[dispatch_webhook]
+        WebhookProc -->|4. Local DB Query| WebhookReadTable
+        WebhookProc -->|POST Resilient Dispatch| PartnerAPI["Partner Store Webhook Endpoint"]
     end
 
     subgraph Reporting Context [Reporting Bounded Context]
         RepSub[Kafka Consumer] -->|Write Materialized Views| RepTable[("Profiles, Orders, & Payments Read Model")]
         
-        QueryCMD[3. GET /reporting/customers/.../dashboard] -->|Read Model Query| RepTable
-        QueryStoreCMD[4. GET /reporting/stores/.../dashboard] -->|Read Model Query| RepTable
+        QueryCMD[5. GET /reporting/customers/.../dashboard] -->|Read Model Query| RepTable
+        QueryStoreCMD[6. GET /reporting/stores/.../dashboard] -->|Read Model Query| RepTable
     end
 
     %% Flow Connections
-    OrderDB -->|Publish Event| Kafka
-    Kafka -->|Asynchronous Sync| Sub
-    Kafka -->|Asynchronous Sync| RepSub
+    OrderDB -->|Publish Event| KafkaOrderCreated
+    OrderDB -->|Publish Event| KafkaOrderConfirmed
+    ProductDB -->|Publish Event| KafkaStoreRegistered
+    
+    KafkaOrderCreated -->|Asynchronous Sync| Sub
+    KafkaOrderCreated -->|Asynchronous Sync| RepSub
+    KafkaStoreRegistered -->|Asynchronous Sync| WebSubStore
+    KafkaOrderConfirmed -->|Asynchronous Sync| ConfirmEvent
 ```
 
 1. **The Write Model (Command Side)**: Exclusively managed by `order-service`. Mutating operations (e.g. creating an order) write directly to the `order_db` source of truth.
@@ -353,6 +377,8 @@ sequenceDiagram
     participant ProductService as Product Service
     participant PaymentService as Payment Service
     participant ReportingService as Reporting Service
+    participant WebhookService as Webhook Service
+    participant PartnerStore as Partner Store Webhook
 
     Client->>OrderService: POST /orders
     activate OrderService
@@ -401,13 +427,25 @@ sequenceDiagram
             PaymentService->>Kafka: Outbox Publisher dispatches "payment.succeeded" Event
             par Saga Success Action
                 Kafka->>OrderService: Deliver "payment.succeeded" Event
-                OrderService->>OrderService: Update Order (status: CONFIRMED)
+                OrderService->>OrderService: Update Order (status: CONFIRMED) & Outbox Message (Atomic DB Transaction)
                 OrderService-->>Client: Stream Push: status: CONFIRMED
+                OrderService->>Kafka: Outbox Publisher dispatches "order.confirmed" Event
             and Reporting Service Success Capture
                 Kafka->>ReportingService: Deliver "payment.succeeded" Event
                 activate ReportingService
                 ReportingService->>ReportingService: Materialize Payment & Update Order status to CONFIRMED
                 deactivate ReportingService
+            end
+
+            par Webhook Resilient Dispatch
+                Kafka->>WebhookService: Deliver "order.confirmed" Event
+                activate WebhookService
+                WebhookService->>WebhookService: Query local DB for materialized store (Zero HTTP calls)
+                WebhookService->>PartnerStore: POST Resilient Webhook Dispatch
+                activate PartnerStore
+                PartnerStore-->>WebhookService: Return 200 OK / Success
+                deactivate PartnerStore
+                deactivate WebhookService
             end
         else Payment Failed (Compensating Saga Rollback)
             PaymentService->>PaymentService: Save Payment & Outbox Message (Atomic DB Transaction)
@@ -483,6 +521,7 @@ Fill in the custom database credentials, port configurations, and Redis credenti
 | **Order Service OpenAPI Docs** | `8003` | `http://localhost/orders/docs` or `http://localhost:8003/docs` |
 | **Payment Service OpenAPI Docs**| `8004` | `http://localhost/payments/docs` or `http://localhost:8004/docs` |
 | **Reporting Service OpenAPI Docs**| `8005` | `http://localhost/reporting/docs` or `http://localhost:8005/docs` |
+| **Webhook Service OpenAPI Docs** | `8006` | `http://localhost/webhooks/docs` or `http://localhost:8006/docs` |
 | **Jaeger Distributed Tracing** | `16686` | `http://localhost:16686/` |
 | **Grafana Telemetry Dashboard**| `3000` | `http://localhost:3000/` |
 | **Prometheus Metrics Engine** | `9090` | `http://localhost:9090/` |
@@ -730,6 +769,9 @@ All service interactions are routed through the Traefik Gateway on port `80`.
 | **Payment Service** | `GET` | `/payments` | `:8004/` | None | No |
 | **Payment Service** | `GET` | `/payments/{order_id}` | `:8004/{order_id}` | None (Path Parameter) | No |
 | **Reporting Service** | `GET` | `/reporting/stores/{store_id}/dashboard` | `:8005/stores/{store_id}/dashboard` | None (Path Parameter) | No |
+| **Reporting Service** | `GET` | `/reporting/customers/{customer_id}/dashboard` | `:8005/customers/{customer_id}/dashboard` | None (Path Parameter) | No |
+| **Webhook Service**   | `GET` | `/webhooks/stores`                       | `:8006/stores`                          | None                  | No  |
+| **Webhook Service**   | `GET` | `/webhooks/logs`                         | `:8006/logs`                            | None                  | No  |
 
 ---
 
@@ -820,6 +862,14 @@ All service interactions are routed through the Traefik Gateway on port `80`.
 * **Retrieve Store Sales Performance Dashboard (CQRS View)**:
   ```bash
   curl -s http://localhost/reporting/stores/1/dashboard
+  ```
+* **Retrieve Materialized Store Configurations (Webhook Service Read Model)**:
+  ```bash
+  curl -i http://localhost/webhooks/stores
+  ```
+* **Retrieve Historical Webhook Delivery Logs**:
+  ```bash
+  curl -i http://localhost/webhooks/logs
   ```
 
 ---
