@@ -17,9 +17,9 @@ subscriber = WebhookMessagingSubscriber(settings.KAFKA_BOOTSTRAP_SERVERS, db)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle coordinator establishing background subscription listeners and database schema initialization"""
-    logger.info("Initializing Webhook Service database schema...")
-    # Map SQLAlchemy tables to PostgreSQL DB with connection retries
-    await db.initialize_schema(Base, logger)
+    logger.info("Applying database schema migrations...")
+    import asyncio
+    await asyncio.to_thread(db.run_migrations)
 
     # Programmatically create the SQL-backed Inbox Pattern message deduplication table
     logger.info("Programmatically ensuring idempotent_consumers inbox table exists...")
@@ -30,11 +30,7 @@ async def lifespan(app: FastAPI):
                 processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
-        # Ensure column is_famous exists in materialized_stores
-        await conn.execute(text("""
-            ALTER TABLE materialized_stores ADD COLUMN IF NOT EXISTS is_famous BOOLEAN DEFAULT FALSE
-        """))
-    logger.info("Idempotent consumers table and migrations initialized successfully.")
+    logger.info("Idempotent consumers table initialized successfully.")
 
     # Start Kafka consumers
     await subscriber.start()

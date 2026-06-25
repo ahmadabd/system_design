@@ -27,6 +27,7 @@ class OrderCreatedEvent(DomainEvent):
     total_price: float
     store_id: int
     is_famous: bool = False
+    payment_method: str = "AUTOMATIC"
 
 class InventoryReservedEvent(DomainEvent):
     event_type: str = "InventoryReserved"
@@ -39,6 +40,12 @@ class InventoryFailedEvent(DomainEvent):
     order_id: int
     product_id: int
     reason: str
+
+class PaymentSessionCreatedEvent(DomainEvent):
+    event_type: str = "PaymentSessionCreated"
+    order_id: int
+    checkout_url: str
+    session_id: str
 
 class PaymentSucceededEvent(DomainEvent):
     event_type: str = "PaymentSucceeded"

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, ForeignKey, Boolean
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, Boolean, CheckConstraint
 from shared.common.database import Base
 
 class StoreDB(Base):
@@ -19,6 +19,10 @@ class ProductDB(Base):
     price = Column(Float, nullable=False)
     stock = Column(Integer, nullable=False, default=0)
     store_id = Column(Integer, ForeignKey("stores.id"), nullable=False, default=1)
+
+    __table_args__ = (
+        CheckConstraint("stock >= 0", name="check_stock_non_negative"),
+    )
 
 class MaterializedReservationDB(Base):
     """SQLAlchemy model for local materialized order stock reservations (CQRS read model)"""

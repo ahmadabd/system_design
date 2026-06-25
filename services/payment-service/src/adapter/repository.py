@@ -15,24 +15,30 @@ class SQLAlchemyPaymentRepository(PaymentRepository):
             id=db_pay.id,
             order_id=db_pay.order_id,
             amount=db_pay.amount,
-            status=db_pay.status
+            status=db_pay.status,
+            checkout_url=db_pay.checkout_url
         )
 
     async def save(self, payment: Payment) -> Payment:
         """Persist Domain Aggregate to the Database"""
-        db_pay = await self.session.get(PaymentDB, payment.id) if payment.id else None
+        # Since order_id is unique for each payment, query by order_id to find existing record
+        query = select(PaymentDB).where(PaymentDB.order_id == payment.order_id)
+        res = await self.session.execute(query)
+        db_pay = res.scalars().first()
         
         if db_pay:
             # Update existing
             db_pay.amount = payment.amount
             db_pay.status = payment.status
+            db_pay.checkout_url = payment.checkout_url
         else:
             # Create new
             db_pay = PaymentDB(
                 id=payment.id,
                 order_id=payment.order_id,
                 amount=payment.amount,
-                status=payment.status
+                status=payment.status,
+                checkout_url=payment.checkout_url
             )
             self.session.add(db_pay)
         
@@ -62,19 +68,21 @@ class SQLAlchemyPaymentRepository(PaymentRepository):
         db_payments = result.scalars().all()
         return [self._to_domain(p) for p in db_payments]
 
-    async def save_materialized_order(self, order_id: int, total_price: float, quantity: int, store_id: int = 1) -> None:
+    async def save_materialized_order(self, order_id: int, total_price: float, quantity: int, store_id: int = 1, payment_method: str = "AUTOMATIC") -> None:
         """Save/upsert local materialized order details (CQRS view)"""
         db_order = await self.session.get(MaterializedOrderDB, order_id)
         if db_order:
             db_order.total_price = total_price
             db_order.quantity = quantity
             db_order.store_id = store_id
+            db_order.payment_method = payment_method
         else:
             db_order = MaterializedOrderDB(
                 order_id=order_id,
                 total_price=total_price,
                 quantity=quantity,
-                store_id=store_id
+                store_id=store_id,
+                payment_method=payment_method
             )
             self.session.add(db_order)
         await self.session.flush()
@@ -88,5 +96,6 @@ class SQLAlchemyPaymentRepository(PaymentRepository):
             "order_id": db_order.order_id,
             "total_price": db_order.total_price,
             "quantity": db_order.quantity,
-            "store_id": db_order.store_id
+            "store_id": db_order.store_id,
+            "payment_method": db_order.payment_method
         }

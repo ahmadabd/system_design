@@ -8,6 +8,8 @@ class OrderDTO(BaseModel):
     total_price: float
     status: str
     store_id: int
+    payment_method: str
+    payment_url: str | None = None
 
     class Config:
         from_attributes = True

@@ -9,6 +9,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY shared/ /app/shared/
 
 # Copy service-specific source code
+# Copy Alembic migrations configuration and files
+COPY services/payment-service/alembic.ini /app/alembic.ini
+COPY services/payment-service/migrations/ /app/migrations/
+
+# Copy service-specific source code
 COPY services/payment-service/src/ /app/src/
 
 # Ensure python can locate shared packages

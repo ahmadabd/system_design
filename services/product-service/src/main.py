@@ -22,9 +22,9 @@ outbox_publisher = OutboxPublisher(db, mq_manager)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle coordinator establishing background subscription listeners, database pools, and idempotency tables"""
-    logger.info("Initializing Product Service database schema...")
-    # Map SQLAlchemy tables to PostgreSQL DB with connection retries
-    await db.initialize_schema(Base, logger)
+    logger.info("Applying database schema migrations...")
+    import asyncio
+    await asyncio.to_thread(db.run_migrations)
 
     # Programmatically create the SQL-backed Inbox Pattern message deduplication table
     logger.info("Programmatically ensuring idempotent_consumers inbox table exists...")
@@ -49,7 +49,22 @@ async def lifespan(app: FastAPI):
         await conn.execute(text("""
             SELECT setval(pg_get_serial_sequence('stores', 'id'), coalesce(max(id), 1), max(id) IS NOT null) FROM stores;
         """))
-    logger.info("Idempotent consumers table and default store initialized successfully.")
+
+        # Add constraint check_stock_non_negative to products table if it does not exist
+        await conn.execute(text("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 
+                    FROM information_schema.constraint_column_usage 
+                    WHERE table_name = 'products' AND constraint_name = 'check_stock_non_negative'
+                ) THEN
+                    ALTER TABLE products ADD CONSTRAINT check_stock_non_negative CHECK (stock >= 0);
+                END IF;
+            END;
+            $$;
+        """))
+    logger.info("Idempotent consumers table, default store, and non-negative stock constraint initialized successfully.")
 
     # Start Outbox Publisher background worker
     outbox_publisher.start()

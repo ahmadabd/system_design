@@ -13,3 +13,5 @@ class OrderDB(Base):
     status = Column(String(50), nullable=False, default="PENDING")
     store_id = Column(Integer, nullable=False, default=1)
     is_famous = Column(Boolean, nullable=False, default=False)
+    payment_method = Column(String(50), nullable=False, default="AUTOMATIC")
+    payment_url = Column(String(255), nullable=True)

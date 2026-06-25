@@ -19,7 +19,9 @@ class SQLAlchemyOrderRepository(OrderRepository):
             total_price=db_order.total_price,
             status=db_order.status,
             store_id=db_order.store_id,
-            is_famous=db_order.is_famous
+            is_famous=db_order.is_famous,
+            payment_method=db_order.payment_method,
+            payment_url=db_order.payment_url
         )
 
     async def save(self, order: Order) -> Order:
@@ -35,6 +37,8 @@ class SQLAlchemyOrderRepository(OrderRepository):
                 db_order.status = order.status
                 db_order.store_id = order.store_id
                 db_order.is_famous = order.is_famous
+                db_order.payment_method = order.payment_method
+                db_order.payment_url = order.payment_url
         else:
             # Create new
             db_order = OrderDB(
@@ -44,7 +48,9 @@ class SQLAlchemyOrderRepository(OrderRepository):
                 total_price=order.total_price,
                 status=order.status,
                 store_id=order.store_id,
-                is_famous=order.is_famous
+                is_famous=order.is_famous,
+                payment_method=order.payment_method,
+                payment_url=order.payment_url
             )
             self.session.add(db_order)
         

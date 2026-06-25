@@ -148,7 +148,7 @@ class ProductMessagingSubscriber:
                     return
 
                 repo = SQLAlchemyProductRepository(session)
-                product = await repo.find_by_id(product_id)
+                product = await repo.find_by_id(product_id, for_update=True)
                 if not product:
                     logger.error(f"Product {product_id} not found during compensation for Order {order_id}.")
                     return

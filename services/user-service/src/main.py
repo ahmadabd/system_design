@@ -17,9 +17,9 @@ outbox_publisher = OutboxPublisher(db, mq_manager)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle startup and shutdown task coordinator"""
-    logger.info("Initializing User Service database schema...")
-    # Programmatic schema table creation with connection retries
-    await db.initialize_schema(Base, logger)
+    logger.info("Applying database schema migrations...")
+    import asyncio
+    await asyncio.to_thread(db.run_migrations)
     
     # Programmatically create the SQL-backed Inbox Pattern message deduplication table
     logger.info("Programmatically ensuring idempotent_consumers inbox table exists...")

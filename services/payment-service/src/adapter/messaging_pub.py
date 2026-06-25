@@ -1,6 +1,6 @@
 import logging
 from sqlalchemy.ext.asyncio import AsyncSession
-from shared.contracts.events import PaymentSucceededEvent, PaymentFailedEvent
+from shared.contracts.events import PaymentSucceededEvent, PaymentFailedEvent, PaymentSessionCreatedEvent
 from shared.common.outbox import save_to_outbox
 
 logger = logging.getLogger("PaymentMessagingPublisher")
@@ -9,6 +9,15 @@ class PaymentMessagingPublisher:
     """Outbound hexagonal messaging adapter to dispatch payment integration events using Outbox Pattern"""
     def __init__(self, session: AsyncSession):
         self.session = session
+
+    async def publish_payment_session_created(self, event: PaymentSessionCreatedEvent) -> None:
+        """Queue a PaymentSessionCreatedEvent into the database outbox"""
+        logger.info(f"Writing PaymentSessionCreated event to outbox for Order {event.order_id} (Session: {event.session_id})")
+        payload = event.model_dump()
+        if "timestamp" in payload.get("metadata", {}):
+            payload["metadata"]["timestamp"] = payload["metadata"]["timestamp"].isoformat()
+        
+        await save_to_outbox(self.session, "payment.session_created", payload)
 
     async def publish_payment_succeeded(self, event: PaymentSucceededEvent) -> None:
         """Queue a PaymentSucceededEvent into the database outbox"""

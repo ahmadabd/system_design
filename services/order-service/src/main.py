@@ -7,7 +7,7 @@ from shared.common.messaging import KafkaManager
 from shared.common.observability import setup_observability, register_graceful_shutdown
 from src.infrastructure.config import settings
 from src.infrastructure.db_setup import db
-from src.presentation.api import router, mq_manager
+from src.presentation.api import router, mq_manager, idempotency_manager
 from src.adapter.messaging_sub import OrderMessagingSubscriber
 from shared.common.outbox import OutboxPublisher
 
@@ -22,9 +22,9 @@ outbox_publisher = OutboxPublisher(db, mq_manager)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle coordinator establishing background subscription listeners, database pools, and idempotency tables"""
-    logger.info("Initializing Order Service database schema...")
-    # Map SQLAlchemy tables to PostgreSQL DB with connection retries
-    await db.initialize_schema(Base, logger)
+    logger.info("Applying database schema migrations...")
+    import asyncio
+    await asyncio.to_thread(db.run_migrations)
 
     # Programmatically create the SQL-backed Inbox Pattern message deduplication table
     logger.info("Programmatically ensuring idempotent_consumers inbox table exists...")
@@ -35,17 +35,14 @@ async def lifespan(app: FastAPI):
                 processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
-        await conn.execute(text("""
-            ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_famous BOOLEAN DEFAULT FALSE
-        """))
-    logger.info("Idempotent consumers table and schema migrations initialized successfully.")
+    logger.info("Idempotent consumers table initialized successfully.")
 
     # Start Outbox Publisher background worker
     outbox_publisher.start()
 
     # Open persistent Kafka connection for background subscriber listener
     await background_mq_manager.connect()
-    subscriber = OrderMessagingSubscriber(background_mq_manager)
+    subscriber = OrderMessagingSubscriber(background_mq_manager, redis_client=idempotency_manager.redis)
     await subscriber.start_listening()
 
     yield

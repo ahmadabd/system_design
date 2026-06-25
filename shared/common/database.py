@@ -106,6 +106,22 @@ class Database:
                     )
                 await asyncio.sleep(delay)
 
+    def run_migrations(self, alembic_ini_path: str = "alembic.ini") -> None:
+        """Run database migrations programmatically using Alembic"""
+        from alembic.config import Config
+        from alembic import command
+        import logging
+
+        alembic_logger = logging.getLogger("alembic")
+        alembic_logger.setLevel(logging.INFO)
+
+        config = Config(alembic_ini_path)
+        # Force database URL from engine connection instance
+        db_url = self._engine.url.render_as_string(hide_password=False)
+        config.set_main_option("sqlalchemy.url", db_url)
+        
+        command.upgrade(config, "head")
+
     async def get_session(self, request: Request = None) -> AsyncGenerator[AsyncSession, None]:
         """Dependency generator to retrieve DB sessions with automatic cleanup and circuit breaker wrapping"""
         is_write = True

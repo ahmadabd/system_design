@@ -67,7 +67,7 @@ class ProductApplicationService:
         """Reserve inventory for a customer's order. Publishes success or failure event."""
         logger.info(f"Attempting inventory reservation: Order {command.order_id}, Product {command.product_id}")
         
-        product = await self.product_repo.find_by_id(command.product_id)
+        product = await self.product_repo.find_by_id(command.product_id, for_update=True)
         if not product:
             logger.error(f"Catalog product ID {command.product_id} not found during reservation.")
             # Dispatch event indicating reservation failure

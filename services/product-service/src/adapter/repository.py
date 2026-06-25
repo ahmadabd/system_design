@@ -43,9 +43,14 @@ class SQLAlchemyProductRepository(ProductRepository):
         await self.session.flush() # Populate generated primary key id
         return self._to_domain(db_prod)
 
-    async def find_by_id(self, product_id: int) -> Product | None:
+    async def find_by_id(self, product_id: int, for_update: bool = False) -> Product | None:
         """Find product by ID and map to Domain Aggregate"""
-        db_prod = await self.session.get(ProductDB, product_id)
+        if for_update:
+            stmt = select(ProductDB).where(ProductDB.id == product_id).with_for_update()
+            result = await self.session.execute(stmt)
+            db_prod = result.scalar_one_or_none()
+        else:
+            db_prod = await self.session.get(ProductDB, product_id)
         if not db_prod:
             return None
         return self._to_domain(db_prod)

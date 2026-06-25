@@ -4,7 +4,7 @@ import uuid
 from src.domain.payment import Payment
 from src.domain.repository import PaymentRepository
 from src.application.commands import ProcessPaymentCommand
-from shared.contracts.events import PaymentSucceededEvent, PaymentFailedEvent
+from shared.contracts.events import PaymentSucceededEvent, PaymentFailedEvent, PaymentSessionCreatedEvent
 from shared.common.http_client import ResilientHTTPClient
 from src.infrastructure.config import settings
 
@@ -36,11 +36,13 @@ class PaymentApplicationService:
 
         # 1. Fetch order details from local CQRS materialized state
         order_data = await self.payment_repo.find_materialized_order(order_id)
+        payment_method = "AUTOMATIC"
         
         if order_data:
-            logger.info(f"CQRS Materialized State: Found order details locally for Order={order_id}: Price={order_data.get('total_price')}, Qty={order_data.get('quantity')}")
+            logger.info(f"CQRS Materialized State: Found order details locally for Order={order_id}: Price={order_data.get('total_price')}, Qty={order_data.get('quantity')}, Method={order_data.get('payment_method')}")
             amount = order_data.get("total_price")
             quantity = order_data.get("quantity", 1)
+            payment_method = order_data.get("payment_method", "AUTOMATIC")
         else:
             logger.warning(f"CQRS Cache Miss: Order {order_id} details not found in local materialized state. Gracefully falling back to HTTP query...")
             # Downstream validation HTTP query fallback
@@ -53,6 +55,7 @@ class PaymentApplicationService:
                 fallback_data = response.json()
                 amount = fallback_data.get("total_price")
                 quantity = fallback_data.get("quantity", 1)
+                payment_method = fallback_data.get("payment_method", "AUTOMATIC")
             except Exception as http_err:
                 logger.error(f"HTTP Fallback Failed: Downstream validation failed. Could not fetch details for Order {order_id}: {http_err}")
                 # Dispatch event indicating payment failure due to network/system error
@@ -78,10 +81,31 @@ class PaymentApplicationService:
             await self.event_publisher.publish_payment_failed(fail_event)
             return
 
-        # 2. Instantiate payment aggregate root
+        # 2. Handle STRIPE checkout redirection scenario
+        if payment_method == "STRIPE":
+            logger.info(f"Redirect Payment Mode: Creating Stripe checkout session for Order {order_id} (Amount: {amount})")
+            
+            checkout_url = f"http://localhost:8004/payments/stripe-checkout/{order_id}"
+            payment_id = f"pay-stripe-{uuid.uuid4().hex[:8]}"
+            
+            # Create payment aggregate in AWAITING_PAYMENT state
+            payment = Payment.create_pending_session(order_id=order_id, amount=amount, checkout_url=checkout_url, payment_id=payment_id)
+            await self.payment_repo.save(payment)
+            
+            # Publish PaymentSessionCreatedEvent
+            session_event = PaymentSessionCreatedEvent(
+                order_id=order_id,
+                checkout_url=checkout_url,
+                session_id=payment_id
+            )
+            await self.event_publisher.publish_payment_session_created(session_event)
+            logger.info(f"Successfully created simulated Stripe checkout session for Order {order_id}")
+            return
+
+        # 3. Instantiate payment aggregate root (Default AUTOMATIC flow)
         payment = Payment.create(order_id=order_id, amount=amount)
 
-        # 3. Simulate Payment Gateway processing with custom resilience rules
+        # 4. Simulate Payment Gateway processing with custom resilience rules
         payment_id = f"pay-{uuid.uuid4().hex[:8]}"
 
         try:
@@ -131,5 +155,51 @@ class PaymentApplicationService:
                     )
                     await self.event_publisher.publish_payment_failed(failed_event)
 
+        finally:
+            payment.clear_events()
+
+    async def complete_stripe_payment(self, order_id: int, success: bool) -> None:
+        """Process callback from Stripe Checkout simulation"""
+        logger.info(f"Stripe checkout completion callback received: Order={order_id}, Success={success}")
+        
+        payment = await self.payment_repo.find_by_order_id(order_id)
+        if not payment:
+            logger.error(f"Payment record not found for Order {order_id} during Stripe completion.")
+            return
+            
+        if payment.status != "AWAITING_PAYMENT":
+            logger.warning(f"Payment status is '{payment.status}', not 'AWAITING_PAYMENT'. Ignoring Stripe callback.")
+            return
+        
+        try:
+            if success:
+                logger.info(f"Stripe payment success for Order {order_id} (Amount: {payment.amount})")
+                payment.succeed(payment.id)
+                await self.payment_repo.save(payment)
+                
+                # Publish PaymentSucceeded integration event
+                for event in payment.domain_events:
+                    if event["event_type"] == "PaymentSucceeded":
+                        success_event = PaymentSucceededEvent(
+                            payment_id=event["payment_id"],
+                            order_id=event["order_id"],
+                            amount=event["amount"]
+                        )
+                        await self.event_publisher.publish_payment_succeeded(success_event)
+            else:
+                logger.info(f"Stripe payment cancelled/failed for Order {order_id}")
+                payment.fail(payment.id, reason="User cancelled Stripe checkout or card was declined.")
+                await self.payment_repo.save(payment)
+                
+                # Publish PaymentFailed integration event (triggers SAGA rollback)
+                for event in payment.domain_events:
+                    if event["event_type"] == "PaymentFailed":
+                        failed_event = PaymentFailedEvent(
+                            payment_id=event["payment_id"],
+                            order_id=event["order_id"],
+                            amount=event["amount"],
+                            reason=event["reason"]
+                        )
+                        await self.event_publisher.publish_payment_failed(failed_event)
         finally:
             payment.clear_events()

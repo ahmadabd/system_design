@@ -10,7 +10,7 @@ class ProductRepository(ABC):
         pass
 
     @abstractmethod
-    async def find_by_id(self, product_id: int) -> Product | None:
+    async def find_by_id(self, product_id: int, for_update: bool = False) -> Product | None:
         """Find product by unique key identity"""
         pass
 

@@ -6,3 +6,4 @@ class CreateOrderRequest(BaseModel):
     quantity: int = Field(..., gt=0)
     total_price: float = Field(..., gt=0.0)
     store_id: int | None = Field(default=None, gt=0)
+    payment_method: str = Field(default="AUTOMATIC")

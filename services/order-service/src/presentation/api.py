@@ -50,7 +50,8 @@ async def create_order(
             product_id=request_data.product_id,
             quantity=request_data.quantity,
             total_price=request_data.total_price,
-            store_id=request_data.store_id
+            store_id=request_data.store_id,
+            payment_method=request_data.payment_method
         )
         return await service.create_order(command)
     except ValueError as e:
@@ -123,7 +124,11 @@ async def order_status_stream(
                 
                 if order.status != last_status:
                     last_status = order.status
-                    yield f"data: {{\"order_id\": {order_id}, \"status\": \"{order.status}\"}}\n\n"
+                    import json
+                    payload = {"order_id": order_id, "status": order.status}
+                    if order.payment_url:
+                        payload["payment_url"] = order.payment_url
+                    yield f"data: {json.dumps(payload)}\n\n"
                     
                 if order.status in ["CONFIRMED", "CANCELLED"]:
                     break

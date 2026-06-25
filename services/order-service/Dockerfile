@@ -9,6 +9,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY shared/ /app/shared/
 
 # Copy service-specific source code
+# Copy Alembic migrations configuration and files
+COPY services/order-service/alembic.ini /app/alembic.ini
+COPY services/order-service/migrations/ /app/migrations/
+
+# Copy service-specific source code
 COPY services/order-service/src/ /app/src/
 
 # Ensure python can locate shared packages

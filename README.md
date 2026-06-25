@@ -485,6 +485,94 @@ sequenceDiagram
     deactivate OrderService
 ```
 
+### Stripe Redirect-Based Checkout Flow vs. Automatic Payment Flow
+
+The system supports two distinct payment flows specified via the `payment_method` attribute on order placement:
+1. **`"AUTOMATIC"` (Default)**: Immediately triggers a credit card charge simulation once stock is reserved, confirming or cancelling the transaction in one go (standard Saga step).
+2. **`"STRIPE"`**: Performs redirect-based asynchronous checkout. Once stock is reserved, the payment service initializes a checkout session, generates a checkout simulator URL, and publishes `payment.session_created`. The order service moves the order status to `AWAITING_PAYMENT` and records the URL. The client interacts with the Stripe simulator, and a webhook callback triggers the final confirmation or compensation Saga.
+
+#### Stripe Redirect Flow Sequence Diagram:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client
+    participant OrderService as Order Service
+    participant Kafka as Apache Kafka Broker
+    participant ProductService as Product Service
+    participant PaymentService as Payment Service
+    participant StripeSimulator as Stripe Simulator (HTML)
+
+    Client->>OrderService: POST /orders (payment_method: "STRIPE")
+    activate OrderService
+    OrderService->>ProductService: GET /products/{id} (Verify & resolve store_id)
+    ProductService-->>OrderService: Return Product Details
+    OrderService->>OrderService: Write Order (status: PENDING) & Outbox Message
+    OrderService-->>Client: Returns Order DTO (PENDING, payment_url: null)
+    deactivate OrderService
+    OrderService->>Kafka: Outbox Publisher dispatches "order.created" Event
+
+    Client->>OrderService: Establish SSE status-stream (GET /orders/{id}/status-stream)
+    activate OrderService
+
+    par Parallel Event Deliveries (CQRS Materialization)
+        Kafka->>PaymentService: Deliver "order.created" Event
+        PaymentService->>PaymentService: Materialize order locally (method: STRIPE)
+    and Product Reservation
+        Kafka->>ProductService: Deliver "order.created" Event
+        ProductService->>ProductService: Decrement stock & save reservation
+        ProductService->>Kafka: Outbox Publisher dispatches "inventory.reserved" Event
+    end
+
+    Kafka->>PaymentService: Deliver "inventory.reserved" Event
+    activate PaymentService
+    PaymentService->>PaymentService: Query local DB for materialized order
+    PaymentService->>PaymentService: Create pending Stripe session & checkout URL
+    PaymentService->>Kafka: Outbox Publisher dispatches "payment.session_created" Event
+    deactivate PaymentService
+
+    Kafka->>OrderService: Deliver "payment.session_created" Event
+    OrderService->>OrderService: Update Order (status: AWAITING_PAYMENT, payment_url: "...")
+    OrderService-->>Client: Stream Push: status: AWAITING_PAYMENT, payment_url: "..."
+
+    Note over Client, StripeSimulator: Client redirects user to payment_url
+    Client->>StripeSimulator: GET /payments/stripe-checkout/{id}
+    activate StripeSimulator
+    StripeSimulator-->>Client: Serve Stripe Checkout Simulator Page (HTML/JS)
+    deactivate StripeSimulator
+
+    alt Customer clicks "Pay Now" (Success path)
+        Client->>StripeSimulator: Submit form (POST /payments/{id}/stripe-complete with success: true)
+        activate StripeSimulator
+        StripeSimulator->>PaymentService: Execute complete_stripe_payment
+        PaymentService->>PaymentService: Save Payment (SUCCEEDED) & Outbox Message
+        StripeSimulator-->>Client: Return status: processed (Redirect to Store)
+        deactivate StripeSimulator
+        PaymentService->>Kafka: Outbox Publisher dispatches "payment.succeeded" Event
+        Kafka->>OrderService: Deliver "payment.succeeded" Event
+        OrderService->>OrderService: Update Order (status: CONFIRMED) & evict cache
+        OrderService-->>Client: Stream Push: status: CONFIRMED
+    else Customer clicks "Cancel" (Failure/Compensating path)
+        Client->>StripeSimulator: Submit form (POST /payments/{id}/stripe-complete with success: false)
+        activate StripeSimulator
+        StripeSimulator->>PaymentService: Execute complete_stripe_payment
+        PaymentService->>PaymentService: Save Payment (FAILED) & Outbox Message
+        StripeSimulator-->>Client: Return status: processed (Redirect to Store)
+        deactivate StripeSimulator
+        PaymentService->>Kafka: Outbox Publisher dispatches "payment.failed" Event
+        par Saga Compensating Action
+            Kafka->>OrderService: Deliver "payment.failed" Event
+            OrderService->>OrderService: Update Order (status: CANCELLED) & evict cache
+            OrderService-->>Client: Stream Push: status: CANCELLED
+        and Saga Stock Restoration
+            Kafka->>ProductService: Deliver "payment.failed" Event
+            ProductService->>ProductService: Increment stock & release reservation
+        end
+    end
+
+    deactivate OrderService
+```
+
 ---
 
 ## ⚡ 5. Getting Started & Running the Platform
@@ -670,6 +758,48 @@ curl -i -X POST http://localhost/orders \
 - The order status stays `PENDING` during the 4-second hang.
 - Once the simulated timeout is hit, the payment registers as failed. The order transitions to `CANCELLED` and stock is safely compensated back to the DB catalog.
 
+### 4.2 Saga Transaction — Redirect Checkout Path (Stripe Flow)
+
+Submit an order specifying `"payment_method": "STRIPE"`:
+```bash
+curl -i -X POST http://localhost/orders \
+  -H "Content-Type: application/json" \
+  -H "X-Idempotency-Key: submit-stripe-order-1" \
+  -d '{"user_id": 1, "product_id": 1, "quantity": 2, "total_price": 199.98, "payment_method": "STRIPE"}'
+```
+
+**Verification**:
+- **Immediate Response**: You will receive a `201 Created` response showing `status: "PENDING"` and `payment_url: null`.
+- **Status Stream Redirection**: Open the status stream to watch status transitions (adjust order ID if needed):
+  ```bash
+  curl -N http://localhost/orders/3/status-stream
+  ```
+  Once stock is reserved, you will see a push with status `AWAITING_PAYMENT` and the target Stripe redirect URL:
+  ```text
+  data: {"order_id": 3, "status": "AWAITING_PAYMENT", "payment_url": "http://localhost:8004/payments/stripe-checkout/3"}
+  ```
+- **Simulate Payment Gateway Webhook Callback**:
+  Submit a completion trigger (simulating a webhook callback from Stripe to the payment service):
+  * **Success path**:
+    ```bash
+    curl -i -X POST http://localhost/payments/3/stripe-complete \
+      -H "Content-Type: application/json" \
+      -d '{"success": true}'
+    ```
+    Expected Stream Output: The status-stream immediately updates to `CONFIRMED`:
+    ```text
+    data: {"order_id": 3, "status": "CONFIRMED"}
+    ```
+    *Note: When querying `GET /orders/3`, the Redis cache is automatically evicted after the commit, serving the updated `CONFIRMED` status instantly.*
+  * **Compensating Saga (Failure path)**:
+    Create a new order with a new idempotency key, listen to its status-stream, and trigger a simulated failure:
+    ```bash
+    curl -i -X POST http://localhost/payments/4/stripe-complete \
+      -H "Content-Type: application/json" \
+      -d '{"success": false}'
+    ```
+    Expected Stream Output: The status-stream immediately updates to `CANCELLED`, releasing the reserved stock in the catalog.
+
 ### 5. Programmatic Circuit Breaker & Self-Healing Demo
 Simulate a database server outage by stopping the User Postgres container:
 ```bash
@@ -762,12 +892,14 @@ All service interactions are routed through the Traefik Gateway on port `80`.
 | **Product Service** | `POST` | `/products/stores` | `:8002/stores` | `{"name", "webhook_url"}` | No |
 | **Product Service** | `GET` | `/products/stores` | `:8002/stores` | None | No |
 | **Product Service** | `GET` | `/products/stores/{store_id}` | `:8002/stores/{store_id}` | None (Path Parameter) | No |
-| **Order Service** | `POST` | `/orders` | `:8003/` | `{"user_id", "product_id", "quantity", "total_price", "store_id"}` | Yes (`X-Idempotency-Key`) |
+| **Order Service** | `POST` | `/orders` | `:8003/` | `{"user_id", "product_id", "quantity", "total_price", "store_id", "payment_method"}` | Yes (`X-Idempotency-Key`) |
 | **Order Service** | `GET` | `/orders` | `:8003/` | None | No |
 | **Order Service** | `GET` | `/orders/{id}` | `:8003/{id}` | None (Path Parameter) | No |
 | **Order Service** | `GET` | `/orders/{id}/status-stream` | `:8003/{id}/status-stream` | None (Real-time SSE Stream) | No |
 | **Payment Service** | `GET` | `/payments` | `:8004/` | None | No |
 | **Payment Service** | `GET` | `/payments/{order_id}` | `:8004/{order_id}` | None (Path Parameter) | No |
+| **Payment Service** | `GET` | `/payments/stripe-checkout/{order_id}` | `:8004/stripe-checkout/{order_id}` | None (Stripe Checkout simulator page) | No |
+| **Payment Service** | `POST` | `/payments/{order_id}/stripe-complete` | `:8004/{order_id}/stripe-complete` | `{"success"}` (Stripe completion webhook) | No |
 | **Reporting Service** | `GET` | `/reporting/stores/{store_id}/dashboard` | `:8005/stores/{store_id}/dashboard` | None (Path Parameter) | No |
 | **Reporting Service** | `GET` | `/reporting/customers/{customer_id}/dashboard` | `:8005/customers/{customer_id}/dashboard` | None (Path Parameter) | No |
 | **Webhook Service**   | `GET` | `/webhooks/stores`                       | `:8006/stores`                          | None                  | No  |
@@ -827,6 +959,13 @@ All service interactions are routed through the Traefik Gateway on port `80`.
   ```bash
   curl -i -N http://localhost/orders/1/status-stream
   ```
+* **Place an Order (Stripe Redirect Flow)**:
+  ```bash
+  curl -i -X POST http://localhost/orders \
+    -H "Content-Type: application/json" \
+    -H "X-Idempotency-Key: submit-order-stripe" \
+    -d '{"user_id": 1, "product_id": 1, "quantity": 1, "total_price": 449.99, "payment_method": "STRIPE"}'
+  ```
 
 ##### 4. Payment Bounded Context
 * **List All Placed Payments**:
@@ -836,6 +975,12 @@ All service interactions are routed through the Traefik Gateway on port `80`.
 * **Retrieve Payment by Order ID**:
   ```bash
   curl -i http://localhost/payments/1
+  ```
+* **Simulate Stripe Checkout Webhook Completion**:
+  ```bash
+  curl -i -X POST http://localhost/payments/1/stripe-complete \
+    -H "Content-Type: application/json" \
+    -d '{"success": true}'
   ```
 
 ##### 5. Reporting Bounded Context (CQRS Customer Dashboard)
@@ -913,6 +1058,10 @@ Use `kafka-console-consumer` to listen to events in real time. Open a separate t
 * **Monitor `payment.failed` (Failure/Compensating Path - Published by Payment Service)**:
   ```bash
   docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic payment.failed --from-beginning
+  ```
+* **Monitor `payment.session_created` (Redirect flow session created)**:
+  ```bash
+  docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic payment.session_created --from-beginning
   ```
 * **Monitor `user.registered` (Published by User Service)**:
   ```bash

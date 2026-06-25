@@ -2,7 +2,7 @@ import logging
 from src.domain.order import Order
 from src.domain.repository import OrderRepository
 from src.domain.services import UserClient, ProductClient
-from src.application.commands import CreateOrderCommand, ConfirmOrderCommand, CancelOrderCommand
+from src.application.commands import CreateOrderCommand, ConfirmOrderCommand, CancelOrderCommand, SetAwaitingPaymentCommand
 from src.application.dtos import OrderDTO
 from shared.contracts.events import OrderCreatedEvent
 
@@ -52,7 +52,8 @@ class OrderApplicationService:
             quantity=command.quantity,
             total_price=command.total_price,
             store_id=store_id,
-            is_famous=is_famous
+            is_famous=is_famous,
+            payment_method=command.payment_method
         )
 
         # Persist aggregate
@@ -69,7 +70,8 @@ class OrderApplicationService:
                     quantity=event["quantity"],
                     total_price=event["total_price"],
                     store_id=event["store_id"],
-                    is_famous=event["is_famous"]
+                    is_famous=event["is_famous"],
+                    payment_method=event["payment_method"]
                 )
                 await self.event_publisher.publish_order_created(integration_event)
 
@@ -77,6 +79,18 @@ class OrderApplicationService:
         order.clear_events()
 
         return OrderDTO.model_validate(saved_order)
+
+    async def set_awaiting_payment(self, command: SetAwaitingPaymentCommand) -> None:
+        """Set order status to AWAITING_PAYMENT and record redirect URL"""
+        logger.info(f"Setting order {command.order_id} to AWAITING_PAYMENT with URL {command.payment_url}")
+        order = await self.order_repo.find_by_id(command.order_id)
+        if not order:
+            logger.error(f"Order ID {command.order_id} not found during set awaiting payment.")
+            return
+
+        order.mark_awaiting_payment(command.payment_url)
+        await self.order_repo.save(order)
+        logger.info(f"Order {command.order_id} successfully marked as awaiting payment!")
 
     async def confirm_order(self, command: ConfirmOrderCommand) -> None:
         """Confirm the order after inventory reservation success"""

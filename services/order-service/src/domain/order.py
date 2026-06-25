@@ -11,6 +11,8 @@ class Order:
         status: str = "PENDING",
         store_id: int = 1,
         is_famous: bool = False,
+        payment_method: str = "AUTOMATIC",
+        payment_url: str | None = None,
         id: int | None = None
     ):
         self.id = id
@@ -21,6 +23,8 @@ class Order:
         self.status = status
         self.store_id = store_id
         self.is_famous = is_famous
+        self.payment_method = payment_method
+        self.payment_url = payment_url
         self.domain_events: List[dict] = []
 
     @classmethod
@@ -31,7 +35,8 @@ class Order:
         quantity: int,
         total_price: float,
         store_id: int = 1,
-        is_famous: bool = False
+        is_famous: bool = False,
+        payment_method: str = "AUTOMATIC"
     ) -> "Order":
         """Factory method to place an order, starting in PENDING state"""
         if quantity <= 0:
@@ -46,7 +51,8 @@ class Order:
             total_price=total_price,
             status="PENDING",
             store_id=store_id,
-            is_famous=is_famous
+            is_famous=is_famous,
+            payment_method=payment_method
         )
         
         # Raise Domain Event
@@ -57,19 +63,27 @@ class Order:
             "quantity": quantity,
             "total_price": total_price,
             "store_id": store_id,
-            "is_famous": is_famous
+            "is_famous": is_famous,
+            "payment_method": payment_method
         })
         return order
 
+    def mark_awaiting_payment(self, payment_url: str) -> None:
+        """Move status to AWAITING_PAYMENT and record checkout URL"""
+        if self.status != "PENDING":
+            raise ValueError(f"Cannot transition to AWAITING_PAYMENT from '{self.status}'")
+        self.status = "AWAITING_PAYMENT"
+        self.payment_url = payment_url
+
     def confirm(self) -> None:
         """Confirm the order after successful inventory allocation"""
-        if self.status != "PENDING":
+        if self.status not in ["PENDING", "AWAITING_PAYMENT"]:
             raise ValueError(f"Cannot confirm order in status '{self.status}'")
         self.status = "CONFIRMED"
 
     def cancel(self, reason: str = "") -> None:
         """Cancel the order due to payment or stock failures"""
-        if self.status != "PENDING":
+        if self.status not in ["PENDING", "AWAITING_PAYMENT"]:
             raise ValueError(f"Cannot cancel order in status '{self.status}'")
         self.status = "CANCELLED"
         self.record_event({

@@ -5,17 +5,18 @@ from src.infrastructure.db_setup import db
 from src.adapter.repository import SQLAlchemyOrderRepository
 from src.adapter.messaging_pub import OrderMessagingPublisher
 from src.application.order_service import OrderApplicationService
-from src.application.commands import ConfirmOrderCommand, CancelOrderCommand
+from src.application.commands import ConfirmOrderCommand, CancelOrderCommand, SetAwaitingPaymentCommand
 
 logger = logging.getLogger("OrderMessagingSubscriber")
 
 class OrderMessagingSubscriber:
     """Inbound Messaging Adapter for Order Service (Hexagonal Adapter)"""
-    def __init__(self, mq_manager: KafkaManager):
+    def __init__(self, mq_manager: KafkaManager, redis_client=None):
         self.mq_manager = mq_manager
+        self.redis_client = redis_client
 
     async def start_listening(self) -> None:
-        """Register consumers for inventory reserved, inventory failed, and payment succeeded/failed triggers"""
+        """Register consumers for inventory reserved, inventory failed, and payment succeeded/failed/session_created triggers"""
         logger.info("Registering Kafka listener for 'inventory.reserved' events...")
         await self.mq_manager.subscribe(
             exchange_name="ecommerce.events",
@@ -46,6 +47,14 @@ class OrderMessagingSubscriber:
             queue_name="order_service_group",
             routing_key="payment.failed",
             callback=self._handle_payment_failed
+        )
+
+        logger.info("Registering Kafka listener for 'payment.session_created' events...")
+        await self.mq_manager.subscribe(
+            exchange_name="ecommerce.events",
+            queue_name="order_service_group",
+            routing_key="payment.session_created",
+            callback=self._handle_payment_session_created
         )
 
     async def _handle_inventory_reserved(self, event_data: dict) -> None:
@@ -84,6 +93,7 @@ class OrderMessagingSubscriber:
                 command = CancelOrderCommand(order_id=order_id, reason=reason)
                 await service.cancel_order(command)
                 await session.commit()
+                await self._evict_order_cache(order_id)
                 logger.info(f"Cancelled Order {order_id} successfully under event ID {event_id}")
             except Exception as e:
                 logger.error(f"Error handling stock reserved failure callback for order {order_id}: {e}", exc_info=True)
@@ -119,6 +129,7 @@ class OrderMessagingSubscriber:
                 command = ConfirmOrderCommand(order_id=order_id)
                 await service.confirm_order(command)
                 await session.commit()
+                await self._evict_order_cache(order_id)
                 logger.info(f"Confirmed Order {order_id} successfully under event ID {event_id}")
             except Exception as e:
                 logger.error(f"Error handling payment succeeded callback for order {order_id}: {e}", exc_info=True)
@@ -155,7 +166,54 @@ class OrderMessagingSubscriber:
                 command = CancelOrderCommand(order_id=order_id, reason=reason)
                 await service.cancel_order(command)
                 await session.commit()
+                await self._evict_order_cache(order_id)
                 logger.info(f"Cancelled Order {order_id} successfully under event ID {event_id}")
             except Exception as e:
                 logger.error(f"Error handling payment failed callback for order {order_id}: {e}", exc_info=True)
                 await session.rollback()
+
+    async def _handle_payment_session_created(self, event_data: dict) -> None:
+        """Process PaymentSessionCreated event and transition order state"""
+        order_id = event_data.get("order_id")
+        checkout_url = event_data.get("checkout_url")
+        event_id = event_data.get("metadata", {}).get("event_id", f"session-fallback-{order_id}")
+        logger.info(f"Received PaymentSessionCreated event (ID: {event_id}): Order={order_id}. Setting redirect URL.")
+
+        if not order_id or not checkout_url:
+            logger.error("Invalid PaymentSessionCreated event structure. Skipping.")
+            return
+
+        async with db._session_maker() as session:
+            try:
+                # 1. Deduplication Check (Inbox Pattern)
+                is_duplicate = await check_and_register_event(session, event_id)
+                if is_duplicate:
+                    logger.warning(
+                        f"Inbox Pattern: Duplicate 'payment.session_created' event detected (ID: {event_id}). "
+                        f"Discarding event to ensure idempotency."
+                    )
+                    return
+
+                # 2. Proceed with domain command execution
+                repo = SQLAlchemyOrderRepository(session)
+                publisher = OrderMessagingPublisher(session)
+                service = OrderApplicationService(repo, publisher)
+
+                command = SetAwaitingPaymentCommand(order_id=order_id, payment_url=checkout_url)
+                await service.set_awaiting_payment(command)
+                await session.commit()
+                await self._evict_order_cache(order_id)
+                logger.info(f"Successfully processed PaymentSessionCreated for Order {order_id} under event ID {event_id}")
+            except Exception as e:
+                logger.error(f"Error handling payment session created callback for order {order_id}: {e}", exc_info=True)
+                await session.rollback()
+
+    async def _evict_order_cache(self, order_id: int) -> None:
+        """Evict the cached order DTO from Redis if redis_client is set"""
+        if self.redis_client and order_id:
+            try:
+                cache_key = f"cache:order:{order_id}"
+                await self.redis_client.delete(cache_key)
+                logger.info(f"Evicted Redis cache for key: '{cache_key}'")
+            except Exception as e:
+                logger.warning(f"Failed to evict Redis cache for order {order_id}: {e}")
