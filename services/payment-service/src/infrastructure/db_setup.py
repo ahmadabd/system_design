@@ -1,4 +1,4 @@
-from shared.common.database import Database, Base
+from shared.common.database import Database
 from src.infrastructure.config import settings
 
 # Instantiate database session pool specifically for the Payment bounded context

@@ -2,7 +2,6 @@ import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from sqlalchemy import text
-from shared.common.database import Base
 from shared.common.observability import setup_observability, register_graceful_shutdown
 from src.infrastructure.config import settings
 from src.infrastructure.db_setup import db

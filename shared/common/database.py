@@ -79,32 +79,7 @@ class Database:
         """Safely dispose of connection pools"""
         await self._engine.dispose()
 
-    async def initialize_schema(self, base_metadata, logger=None) -> None:
-        """Resiliently connect to the database and initialize the schema tables with retries"""
-        import asyncio
-        # Safely extract metadata whether Base or Base.metadata is passed
-        metadata = getattr(base_metadata, "metadata", base_metadata)
-        
-        retries = 20
-        delay = 2
-        for attempt in range(1, retries + 1):
-            try:
-                async with self._engine.begin() as conn:
-                    await conn.run_sync(metadata.create_all)
-                if logger:
-                    logger.info("Database schema initialized successfully!")
-                return
-            except Exception as e:
-                if attempt == retries:
-                    if logger:
-                        logger.error(f"Failed to connect to database and initialize schema after {retries} attempts.")
-                    raise e
-                if logger:
-                    logger.warning(
-                        f"Database is not ready yet (Attempt {attempt}/{retries}). "
-                        f"Retrying in {delay} seconds... Error: {e}"
-                    )
-                await asyncio.sleep(delay)
+
 
     def run_migrations(self, alembic_ini_path: str = "alembic.ini") -> None:
         """Run database migrations programmatically using Alembic"""
