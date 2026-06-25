@@ -1,0 +1,22 @@
+# Ignore git repository and logs
+.git
+.gitignore
+README.md
+
+# Ignore Python virtual environment and cache files
+.venv
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.cache/
+
+# Ignore local environment variables and database files
+.env
+.env.example
+*.db
+*.log
+
+# Ignore graphify generated directory
+graphify-out/

@@ -109,7 +109,15 @@ def idempotent_api(manager_instance: IdempotencyManager, expire_seconds: int = 8
             service_prefix = os.getenv("SERVICE_NAME", "default")
             redis_key = f"idem:{service_prefix}:{idempotency_key}"
 
-            is_new, cached_response = await manager_instance.check_and_lock(redis_key)
+            try:
+                is_new, cached_response = await manager_instance.check_and_lock(redis_key)
+            except Exception as redis_err:
+                logger.error(
+                    f"Redis connectivity failed during idempotency check for key {redis_key}. "
+                    f"Bypassing idempotency (Fail-Open): {redis_err}",
+                    exc_info=True
+                )
+                return await func(*args, **kwargs)
             
             if not is_new:
                 if cached_response is None:
@@ -135,15 +143,25 @@ def idempotent_api(manager_instance: IdempotencyManager, expire_seconds: int = 8
                 # If the function returns a Response object or tuple, serialize it
                 serialized_body = _serialize(result)
                 
-                await manager_instance.save_response(redis_key, status_code, serialized_body, expire_seconds)
+                try:
+                    await manager_instance.save_response(redis_key, status_code, serialized_body, expire_seconds)
+                except Exception as save_err:
+                    logger.warning(f"Failed to save idempotency response to Redis for key {redis_key}: {save_err}")
+                
                 return result
             except HTTPException as http_ex:
                 # API error, unlock key so client can retry
-                await manager_instance.unlock(redis_key)
+                try:
+                    await manager_instance.unlock(redis_key)
+                except Exception as unlock_err:
+                    logger.warning(f"Failed to unlock idempotency key {redis_key} after HTTP exception: {unlock_err}")
                 raise http_ex
             except Exception as e:
                 # System/DB error, unlock key so client can retry
-                await manager_instance.unlock(redis_key)
+                try:
+                    await manager_instance.unlock(redis_key)
+                except Exception as unlock_err:
+                    logger.warning(f"Failed to unlock idempotency key {redis_key} after system exception: {unlock_err}")
                 logger.error(f"Exception during idempotent call execution: {e}", exc_info=True)
                 raise e
 
