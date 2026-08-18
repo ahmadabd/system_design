@@ -18,8 +18,8 @@ processors:
         action: insert
 
 exporters:
-  otlp_grpc/jaeger:
-    endpoint: jaeger:4317
+  otlp_http/jaeger:
+    endpoint: "http://jaeger:4318"
     tls:
       insecure: true
   
@@ -30,16 +30,15 @@ exporters:
   
   otlp_http/loki:
     endpoint: "http://loki:3100/otlp"
-
-  debug:
-    verbosity: detailed
+    tls:
+      insecure: true
 
 service:
   pipelines:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlp_grpc/jaeger, debug]
+      exporters: [otlp_http/jaeger]
     metrics:
       receivers: [otlp]
       processors: [batch]
@@ -47,4 +46,4 @@ service:
     logs:
       receivers: [otlp]
       processors: [resource, batch]
-      exporters: [otlp_http/loki, debug]
+      exporters: [otlp_http/loki]

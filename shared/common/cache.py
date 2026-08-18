@@ -61,7 +61,17 @@ def cache_fallback(
                 return await func(*args, **kwargs)
 
             # Redis cache key
-            redis_key = f"cache:{key_prefix}:{resource_id}"
+            from shared.common.tenant import get_tenant_or_none
+            tenant_slug = None
+            if request:
+                tenant_slug = request.headers.get("X-Tenant-ID") or getattr(request.state, "tenant_slug", None)
+            if not tenant_slug:
+                tenant = get_tenant_or_none()
+                if tenant:
+                    tenant_slug = tenant.slug
+
+            prefix = f"tenant:{tenant_slug}:" if tenant_slug else ""
+            redis_key = f"{prefix}cache:{key_prefix}:{resource_id}"
             redis_client = idempotency_manager.redis
 
             # 1. Cache Check

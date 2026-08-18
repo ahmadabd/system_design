@@ -226,7 +226,56 @@ graph TD
 
 ---
 
-## 🏢 3. DDD Bounded Contexts & Clean Architecture
+## 🏬 3. Multi-Tenancy Architecture (Schema-per-Tenant Model)
+
+The platform implements a production-ready **Multi-Tenant Architecture** using PostgreSQL **Schema-per-Tenant isolation** (Marketplace Model). Each store/tenant operates inside its own isolated database schema (e.g. `store_tech`, `store_alpha`), while global resources (like universal user accounts) and connection pools are safely shared.
+
+```
+Incoming Request (HTTP / REST)
+       │  Header: X-Tenant-ID: store_tech
+       ▼
+[TenantMiddleware] ──(Check/Cache)──► [TenantRegistry (public.tenants)]
+       │
+       ├─► Sets Request State & ContextVar (TenantContext: slug="store_tech")
+       │
+       ├─► [Database Session]: SET LOCAL search_path TO store_tech, public
+       │     └─► Executes SQL inside tenant's isolated tables
+       │
+       ├─► [ResilientHTTPClient]: Injects X-Tenant-ID into downstream calls
+       │     └─► Propagates tenant context to user-service & product-service
+       │
+       └─► [Redis / Cache]: Namespaces keys -> tenant:store_tech:idem:...
+```
+
+### Key Multi-Tenancy Components
+
+| Component | File Location | Responsibility |
+|---|---|---|
+| **Tenant Context** | `shared/common/tenant.py` | Immutable `TenantContext` data class and `ContextVar` management for async task scoping. |
+| **Tenant Middleware** | `shared/common/tenant_middleware.py` | Validates `X-Tenant-ID` header against `TenantRegistry`, rejecting missing/invalid tenants with `400`/`404`. |
+| **Tenant Registry** | `shared/common/tenant_registry.py` | Maintains metadata in `public.tenants` with thread-safe async cache-miss database lookups. |
+| **Dynamic Provisioner** | `shared/common/tenant_provisioner.py` | Programmatically executes Alembic migrations (`run_migrations_for_schema`) on-demand when new tenants are created (`POST /admin/tenants`). |
+| **Connection Pool Safety** | `shared/common/database.py` | Executes `SET LOCAL search_path TO <slug>, public` inside transactions so PostgreSQL connection pools are reused without cross-tenant schema leakage. |
+| **Inter-Service Propagation** | `shared/common/http_client.py` | Automatically injects `X-Tenant-ID` and W3C `traceparent` headers into all downstream REST calls. |
+| **Redis Namespacing** | `shared/common/idempotency.py` | Automatically prefixes idempotency keys and cache keys with `tenant:<slug>:...`. |
+
+### Provisioning a New Tenant Dynamically
+
+To create and migrate a brand-new tenant on the fly:
+```bash
+curl -X POST http://localhost/products/admin/tenants \
+     -H "Content-Type: application/json" \
+     -d '{
+           "slug": "store_gaming",
+           "name": "Gaming Superstore",
+           "owner_email": "owner@gaming.com"
+         }'
+```
+This automatically creates the `store_gaming` schema and applies all database migrations instantly.
+
+---
+
+## 🏢 4. DDD Bounded Contexts & Clean Architecture
 
 Each microservice is a self-contained bounded context strictly isolating its domain, Ubiquitous Language, and database schema, conforming to clean architecture standards:
 
@@ -819,7 +868,20 @@ curl -i http://localhost/users/1
 - Restart the container: `docker compose start user-db`
 - Wait 15 seconds (cooldown period), then query the endpoint again. The circuit probe transitions to `HALF-OPEN`, successfully queries User #1, closes the breaker, and returns `200 OK`.
 
-### 6. Load & Performance Testing (Locust)
+### 6. Automated Resilience, Idempotency & Multi-Tenancy Test Suite (Pytest)
+
+An end-to-end automated test suite validates the core resilience mechanisms after any code change:
+```bash
+.venv/bin/pytest tests/ -v
+```
+
+This suite executes:
+- **Circuit Breaker State Machine**: Verifies transitions (`CLOSED` $\rightarrow$ `OPEN` $\rightarrow$ `HALF-OPEN` $\rightarrow$ `CLOSED`) and sub-millisecond fast-failing.
+- **Idempotency & Race Conditions**: Sends concurrent in-flight requests with identical keys to verify atomic Redis locking, single database mutations, and tenant-namespaced key isolation.
+- **Multi-Tenancy Schema Isolation**: Dynamically provisions tenants, verifies `X-Tenant-ID` header enforcement, and proves data cannot leak across store schemas.
+- **Event-Driven CQRS Read Models**: Verifies asynchronous Kafka event materialization in Webhook and Reporting services.
+
+### 7. Load & Performance Testing (Locust)
 A robust `locustfile.py` load tester is included. To trigger headless performance testing:
 ```bash
 locust --headless -u 10 -r 2 --run-time 1m --host http://localhost
@@ -925,68 +987,85 @@ All service interactions are routed through the Traefik Gateway on port `80`.
 ##### 2. Product Catalog Bounded Context
 * **Create a Catalog Product**:
   ```bash
-  curl -i -X POST http://localhost/products \
+  curl -i -X POST http://localhost/products/ \
     -H "Content-Type: application/json" \
+    -H "X-Tenant-ID: store_tech" \
     -H "X-Idempotency-Key: create-product-prod1" \
-    -d '{"name": "UltraWide Gaming Monitor", "price": 449.99, "stock": 10}'
+    -d '{"name": "UltraWide Gaming Monitor", "price": 449.99, "stock": 10, "store_id": 1}'
   ```
-* **List All Products**:
+* **List All Products in Tenant**:
   ```bash
-  curl -i http://localhost/products
+  curl -i http://localhost/products/ \
+    -H "X-Tenant-ID: store_tech"
   ```
 * **Retrieve Specific Product**:
   ```bash
-  curl -i http://localhost/products/1
+  curl -i http://localhost/products/1 \
+    -H "X-Tenant-ID: store_tech"
   ```
 
 ##### 3. Order Checkout Bounded Context (Triggers Saga Flow)
 * **Place an Order (Success Path - Stock Available)**:
   ```bash
-  curl -i -X POST http://localhost/orders \
+  curl -i -X POST http://localhost/orders/ \
     -H "Content-Type: application/json" \
+    -H "X-Tenant-ID: store_tech" \
     -H "X-Idempotency-Key: submit-order-ord1" \
-    -d '{"user_id": 1, "product_id": 1, "quantity": 1, "total_price": 449.99}'
+    -d '{"user_id": 1, "product_id": 1, "quantity": 1, "total_price": 449.99, "store_id": 1}'
   ```
 * **List All Placed Orders**:
   ```bash
-  curl -i http://localhost/orders
+  curl -i http://localhost/orders/ \
+    -H "X-Tenant-ID: store_tech"
   ```
 * **Retrieve Specific Order Details**:
   ```bash
-  curl -i http://localhost/orders/1
+  curl -i http://localhost/orders/1 \
+    -H "X-Tenant-ID: store_tech"
   ```
 * **Stream Real-Time Order Status Transitions (SSE)**:
   ```bash
-  curl -i -N http://localhost/orders/1/status-stream
+  curl -i -N http://localhost/orders/1/status-stream \
+    -H "X-Tenant-ID: store_tech"
   ```
 * **Place an Order (Stripe Redirect Flow)**:
   ```bash
-  curl -i -X POST http://localhost/orders \
+  curl -i -X POST http://localhost/orders/ \
     -H "Content-Type: application/json" \
+    -H "X-Tenant-ID: store_tech" \
     -H "X-Idempotency-Key: submit-order-stripe" \
-    -d '{"user_id": 1, "product_id": 1, "quantity": 1, "total_price": 449.99, "payment_method": "STRIPE"}'
+    -d '{"user_id": 1, "product_id": 1, "quantity": 1, "total_price": 449.99, "store_id": 1, "payment_method": "STRIPE"}'
   ```
 
 ##### 4. Payment Bounded Context
 * **List All Placed Payments**:
   ```bash
-  curl -i http://localhost/payments
+  curl -i http://localhost/payments/ \
+    -H "X-Tenant-ID: store_tech"
   ```
 * **Retrieve Payment by Order ID**:
   ```bash
-  curl -i http://localhost/payments/1
+  curl -i http://localhost/payments/1 \
+    -H "X-Tenant-ID: store_tech"
   ```
 * **Simulate Stripe Checkout Webhook Completion**:
   ```bash
   curl -i -X POST http://localhost/payments/1/stripe-complete \
     -H "Content-Type: application/json" \
+    -H "X-Tenant-ID: store_tech" \
     -d '{"success": true}'
   ```
 
-##### 5. Reporting Bounded Context (CQRS Customer Dashboard)
+##### 5. Reporting Bounded Context (CQRS Customer & Store Dashboard)
 * **Retrieve Consolidated Customer Report**:
   ```bash
-  curl -s http://localhost/reporting/customers/1/dashboard
+  curl -s http://localhost/reporting/customers/1/dashboard \
+    -H "X-Tenant-ID: store_tech"
+  ```
+* **Retrieve Store Sales Performance Dashboard**:
+  ```bash
+  curl -s http://localhost/reporting/stores/1/dashboard \
+    -H "X-Tenant-ID: store_tech"
   ```
 
 ##### 6. Store Bounded Context & Webhook Management

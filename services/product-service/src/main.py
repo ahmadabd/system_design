@@ -9,18 +9,27 @@ from src.infrastructure.db_setup import db
 from src.presentation.api import router, mq_manager
 from src.adapter.messaging_sub import ProductMessagingSubscriber
 from shared.common.outbox import OutboxPublisher
+from shared.common.tenant_registry import TenantRegistry
+from shared.common.tenant_middleware import TenantMiddleware
+from shared.common.tenant_provisioner import TenantProvisioner
+from fastapi import APIRouter
+from pydantic import BaseModel
 
 logger = logging.getLogger("ProductApplication")
 
 # Separate independent broker connection for background consumer threads
 background_mq_manager = KafkaManager(settings.KAFKA_BOOTSTRAP_SERVERS)
 
+tenant_registry = TenantRegistry(db._engine)
+tenant_provisioner = TenantProvisioner(db._engine, tenant_registry)
+
 # Initialize outbox publisher background worker
-outbox_publisher = OutboxPublisher(db, mq_manager)
+outbox_publisher = OutboxPublisher(db, mq_manager, tenant_registry=tenant_registry)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle coordinator establishing background subscription listeners, database pools, and idempotency tables"""
+    await tenant_registry.bootstrap()
     logger.info("Applying database schema migrations...")
     import asyncio
     await asyncio.to_thread(db.run_migrations)
@@ -28,41 +37,7 @@ async def lifespan(app: FastAPI):
     # Programmatically create the SQL-backed Inbox Pattern message deduplication table
     logger.info("Programmatically ensuring idempotent_consumers inbox table exists...")
     async with db._engine.begin() as conn:
-        await conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS idempotent_consumers (
-                message_id VARCHAR(255) PRIMARY KEY,
-                processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """))
-        # Alter table to add column if not exists
-        await conn.execute(text("""
-            ALTER TABLE stores ADD COLUMN IF NOT EXISTS is_famous BOOLEAN DEFAULT FALSE
-        """))
-        # Seed default store (ID 1)
-        await conn.execute(text("""
-            INSERT INTO stores (id, name, webhook_url, is_famous)
-            VALUES (1, 'Default Store', 'http://localhost/webhooks/default', FALSE)
-            ON CONFLICT (id) DO NOTHING
-        """))
-        # Sync the sequence so next insert starts at 2
-        await conn.execute(text("""
-            SELECT setval(pg_get_serial_sequence('stores', 'id'), coalesce(max(id), 1), max(id) IS NOT null) FROM stores;
-        """))
-
-        # Add constraint check_stock_non_negative to products table if it does not exist
-        await conn.execute(text("""
-            DO $$
-            BEGIN
-                IF NOT EXISTS (
-                    SELECT 1 
-                    FROM information_schema.constraint_column_usage 
-                    WHERE table_name = 'products' AND constraint_name = 'check_stock_non_negative'
-                ) THEN
-                    ALTER TABLE products ADD CONSTRAINT check_stock_non_negative CHECK (stock >= 0);
-                END IF;
-            END;
-            $$;
-        """))
+        pass
     logger.info("Idempotent consumers table, default store, and non-negative stock constraint initialized successfully.")
 
     # Start Outbox Publisher background worker
@@ -101,6 +76,30 @@ async def circuit_breaker_exception_handler(request: Request, exc: CircuitBreake
         content={"detail": f"Service temporarily unavailable: {str(exc)}"}
     )
 
+@app.get("/health", tags=["System"])
+async def health_check():
+    """System health check endpoint"""
+    return {"status": "healthy", "service": "product-service"}
+
+app.add_middleware(TenantMiddleware, registry=tenant_registry)
+
+admin_router = APIRouter(prefix="/admin", tags=["Admin"])
+
+class ProvisionTenantRequest(BaseModel):
+    slug: str
+
+@admin_router.post("/tenants", status_code=201)
+async def provision_tenant(body: ProvisionTenantRequest):
+    await tenant_provisioner.provision(body.slug)
+    return {"status": "provisioned", "slug": body.slug}
+
+@admin_router.get("/tenants")
+async def list_tenants():
+    return {"tenants": tenant_registry.list_all()}
+
+app.include_router(admin_router)
+app.include_router(router)
+
 # Unify OpenTelemetry tracing, structured JSON logging, and Prometheus metrics
 setup_observability(app, settings.SERVICE_NAME)
 
@@ -109,10 +108,3 @@ register_graceful_shutdown(
     app, 
     [outbox_publisher.stop, db.close, mq_manager.close, background_mq_manager.close]
 )
-
-@app.get("/health", tags=["System"])
-async def health_check():
-    """System health check endpoint"""
-    return {"status": "healthy", "service": "product-service"}
-
-app.include_router(router)

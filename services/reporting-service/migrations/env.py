@@ -4,7 +4,7 @@ import asyncio
 from logging.config import fileConfig
 
 from sqlalchemy.ext.asyncio import async_engine_from_config
-from sqlalchemy import pool
+from sqlalchemy import pool, text
 
 from alembic import context
 
@@ -60,9 +60,17 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection):
+    """Run migrations, optionally scoped to a specific PostgreSQL schema."""
+    target_schema = config.get_main_option("target_schema", None)
+
+    if target_schema:
+        connection.execute(text(f"SET search_path TO {target_schema}, public"))
+        connection.execute(text("COMMIT")) 
+
     context.configure(
         connection=connection,
         target_metadata=target_metadata,
+        version_table_schema=target_schema or "public",
     )
 
     with context.begin_transaction():
@@ -83,20 +91,27 @@ async def run_async_migrations():
 
 
 def run_migrations_online() -> None:
-    """Run migrations in 'online' mode.
-
-    In this scenario we need to create an Engine
-    and associate a connection with the context.
-
-    """
-    coro = run_async_migrations()
-    try:
-        asyncio.run(coro)
-    except RuntimeError:
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(asyncio.run, coro)
-            future.result()
+    """Run migrations in 'online' mode."""
+    from sqlalchemy import engine_from_config
+    url = config.get_main_option("sqlalchemy.url", "")
+    if "+asyncpg" in url:
+        coro = run_async_migrations()
+        try:
+            asyncio.run(coro)
+        except RuntimeError:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(asyncio.run, coro)
+                future.result()
+    else:
+        connectable = engine_from_config(
+            config.get_section(config.config_ini_section, {}),
+            prefix="sqlalchemy.",
+            poolclass=pool.NullPool,
+        )
+        with connectable.connect() as connection:
+            do_run_migrations(connection)
+        connectable.dispose()
 
 
 if context.is_offline_mode():

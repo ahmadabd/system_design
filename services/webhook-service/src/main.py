@@ -60,6 +60,13 @@ async def circuit_breaker_exception_handler(request: Request, exc: CircuitBreake
         content={"detail": f"Service temporarily unavailable: {str(exc)}"}
     )
 
+@app.get("/health", tags=["System"])
+async def health_check():
+    """System health check endpoint"""
+    return {"status": "healthy", "service": "webhook-service"}
+
+app.include_router(router)
+
 # Unify OpenTelemetry tracing, structured JSON logging, and Prometheus metrics
 setup_observability(app, settings.SERVICE_NAME)
 
@@ -68,10 +75,3 @@ register_graceful_shutdown(
     app, 
     [subscriber.stop, db.close]
 )
-
-@app.get("/health", tags=["System"])
-async def health_check():
-    """System health check endpoint"""
-    return {"status": "healthy", "service": "webhook-service"}
-
-app.include_router(router)

@@ -1,6 +1,7 @@
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, APIRouter
+from pydantic import BaseModel
 from sqlalchemy import text
 from shared.common.messaging import KafkaManager
 from shared.common.observability import setup_observability, register_graceful_shutdown
@@ -9,18 +10,27 @@ from src.infrastructure.db_setup import db
 from src.presentation.api import router, mq_manager, idempotency_manager
 from src.adapter.messaging_sub import OrderMessagingSubscriber
 from shared.common.outbox import OutboxPublisher
+from shared.common.tenant_registry import TenantRegistry
+from shared.common.tenant_middleware import TenantMiddleware
+from shared.common.tenant_provisioner import TenantProvisioner
 
 logger = logging.getLogger("OrderApplication")
 
 # Separate independent broker connection for background consumer threads
 background_mq_manager = KafkaManager(settings.KAFKA_BOOTSTRAP_SERVERS)
 
+tenant_registry = TenantRegistry(db._engine)
+tenant_provisioner = TenantProvisioner(db._engine, tenant_registry)
+
 # Initialize outbox publisher background worker
-outbox_publisher = OutboxPublisher(db, mq_manager)
+outbox_publisher = OutboxPublisher(db, mq_manager, tenant_registry=tenant_registry)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle coordinator establishing background subscription listeners, database pools, and idempotency tables"""
+    await tenant_registry.bootstrap()
+    # Ensure default tenant schema store_tech is provisioned with up-to-date migrations
+    await tenant_provisioner.provision("store_tech")
     logger.info("Applying database schema migrations...")
     import asyncio
     await asyncio.to_thread(db.run_migrations)
@@ -72,6 +82,30 @@ async def circuit_breaker_exception_handler(request: Request, exc: CircuitBreake
         content={"detail": f"Service temporarily unavailable: {str(exc)}"}
     )
 
+@app.get("/health", tags=["System"])
+async def health_check():
+    """System health check endpoint"""
+    return {"status": "healthy", "service": "order-service"}
+
+app.add_middleware(TenantMiddleware, registry=tenant_registry)
+
+admin_router = APIRouter(prefix="/admin", tags=["Admin"])
+
+class ProvisionTenantRequest(BaseModel):
+    slug: str
+
+@admin_router.post("/tenants", status_code=201)
+async def provision_tenant(body: ProvisionTenantRequest):
+    await tenant_provisioner.provision(body.slug)
+    return {"status": "provisioned", "slug": body.slug}
+
+@admin_router.get("/tenants")
+async def list_tenants():
+    return {"tenants": tenant_registry.list_all()}
+
+app.include_router(admin_router)
+app.include_router(router)
+
 # Unify OpenTelemetry tracing, structured JSON logging, and Prometheus metrics
 setup_observability(app, settings.SERVICE_NAME)
 
@@ -80,10 +114,3 @@ register_graceful_shutdown(
     app, 
     [outbox_publisher.stop, db.close, mq_manager.close, background_mq_manager.close]
 )
-
-@app.get("/health", tags=["System"])
-async def health_check():
-    """System health check endpoint"""
-    return {"status": "healthy", "service": "order-service"}
-
-app.include_router(router)

@@ -5,13 +5,34 @@ from src.infrastructure.db_setup import db
 from src.adapter.db_models import ReportingProfileDB, ReportingOrderDB, ReportingPaymentDB
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy import update
+from shared.common.tenant import set_tenant, TenantContext
 
 logger = logging.getLogger("ReportingMessagingSubscriber")
 
 class ReportingMessagingSubscriber:
     """Inbound hexagonal messaging adapter to consume and materialize platform events (CQRS)"""
-    def __init__(self, mq_manager: KafkaManager):
+    def __init__(self, mq_manager: KafkaManager, redis_client=None):
         self.mq_manager = mq_manager
+        self.redis_client = redis_client
+
+    def _restore_tenant(self, event_data: dict) -> str | None:
+        slug = event_data.get("metadata", {}).get("tenant_slug")
+        if slug:
+            set_tenant(TenantContext(slug=slug))
+        return slug
+
+    async def _invalidate_cache(self, user_id: int = None, store_id: int = None, slug: str = None) -> None:
+        if not self.redis_client:
+            return
+        try:
+            if user_id:
+                key = f"tenant:{slug}:cache:dashboard:{user_id}" if slug else f"cache:dashboard:{user_id}"
+                await self.redis_client.delete(key)
+            if store_id:
+                key = f"tenant:{slug}:cache:store_dashboard:{store_id}" if slug else f"cache:store_dashboard:{store_id}"
+                await self.redis_client.delete(key)
+        except Exception as err:
+            logger.warning(f"Cache invalidation failed: {err}")
 
     async def start_listening(self) -> None:
         """Register consumer callbacks on Kafka event topics"""
@@ -68,7 +89,9 @@ class ReportingMessagingSubscriber:
             logger.error("Missing user_id in UserRegistered payload. Skipping.")
             return
 
-        async with db._session_maker() as session:
+        self._restore_tenant(event_data)
+
+        async with db.session_scope() as session:
             try:
                 # 1. Deduplication Check (Inbox Pattern)
                 is_duplicate = await check_and_register_event(session, event_id)
@@ -84,6 +107,7 @@ class ReportingMessagingSubscriber:
                 ).on_conflict_do_nothing()
                 await session.execute(stmt)
                 await session.commit()
+                await self._invalidate_cache(user_id=user_id, slug=self._restore_tenant(event_data))
                 logger.info(f"CQRS Materializer: Profile for User={user_id} successfully materialized.")
             except Exception as e:
                 logger.error(f"Error materializing UserRegistered event: {e}", exc_info=True)
@@ -106,7 +130,9 @@ class ReportingMessagingSubscriber:
             logger.error("Missing order_id in OrderCreated payload. Skipping.")
             return
 
-        async with db._session_maker() as session:
+        slug = self._restore_tenant(event_data)
+
+        async with db.session_scope() as session:
             try:
                 # 1. Deduplication Check (Inbox Pattern)
                 is_duplicate = await check_and_register_event(session, event_id)
@@ -139,6 +165,7 @@ class ReportingMessagingSubscriber:
                 ).on_conflict_do_nothing()
                 await session.execute(stmt)
                 await session.commit()
+                await self._invalidate_cache(user_id=user_id, store_id=store_id, slug=slug)
                 logger.info(f"CQRS Materializer: Order={order_id} materialized as {initial_status}.")
             except Exception as e:
                 logger.error(f"Error materializing OrderCreated event: {e}", exc_info=True)
@@ -158,7 +185,9 @@ class ReportingMessagingSubscriber:
             logger.error("Missing order_id in PaymentSucceeded payload. Skipping.")
             return
 
-        async with db._session_maker() as session:
+        slug = self._restore_tenant(event_data)
+
+        async with db.session_scope() as session:
             try:
                 # 1. Deduplication Check (Inbox Pattern)
                 is_duplicate = await check_and_register_event(session, event_id)
@@ -183,6 +212,14 @@ class ReportingMessagingSubscriber:
                 )
                 await session.execute(stmt_order)
                 await session.commit()
+                
+                # Invalidate cache for both store and user
+                from sqlalchemy import select
+                ord_res = await session.execute(select(ReportingOrderDB).where(ReportingOrderDB.order_id == order_id))
+                ord_obj = ord_res.scalars().first()
+                if ord_obj:
+                    await self._invalidate_cache(user_id=ord_obj.user_id, store_id=ord_obj.store_id, slug=slug)
+
                 logger.info(f"CQRS Materializer: Payment={payment_id} recorded. Order={order_id} status updated to CONFIRMED.")
             except Exception as e:
                 logger.error(f"Error materializing PaymentSucceeded event: {e}", exc_info=True)
@@ -203,7 +240,9 @@ class ReportingMessagingSubscriber:
             logger.error("Missing order_id in PaymentFailed payload. Skipping.")
             return
 
-        async with db._session_maker() as session:
+        self._restore_tenant(event_data)
+
+        async with db.session_scope() as session:
             try:
                 # 1. Deduplication Check (Inbox Pattern)
                 is_duplicate = await check_and_register_event(session, event_id)
@@ -246,7 +285,9 @@ class ReportingMessagingSubscriber:
             logger.error("Missing order_id in InventoryFailed payload. Skipping.")
             return
 
-        async with db._session_maker() as session:
+        self._restore_tenant(event_data)
+
+        async with db.session_scope() as session:
             try:
                 # 1. Deduplication Check (Inbox Pattern)
                 is_duplicate = await check_and_register_event(session, event_id)

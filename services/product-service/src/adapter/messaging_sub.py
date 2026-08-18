@@ -7,6 +7,7 @@ from src.adapter.messaging_pub import ProductMessagingPublisher
 from src.application.product_service import ProductApplicationService
 from src.application.commands import ReserveInventoryCommand
 from src.adapter.db_models import MaterializedReservationDB
+from shared.common.tenant import set_tenant, TenantContext
 
 logger = logging.getLogger("ProductMessagingSubscriber")
 
@@ -14,6 +15,13 @@ class ProductMessagingSubscriber:
     """Inbound Messaging Adapter for Product Service (Hexagonal Adapter)"""
     def __init__(self, mq_manager: KafkaManager):
         self.mq_manager = mq_manager
+
+    def _restore_tenant(self, event_data: dict) -> str | None:
+        """Extract tenant_slug from event metadata and set the ContextVar."""
+        slug = event_data.get("metadata", {}).get("tenant_slug")
+        if slug:
+            set_tenant(TenantContext(slug=slug))
+        return slug
 
     async def start_listening(self) -> None:
         """Register the consumer queue and bind to order.created routing keys"""
@@ -46,8 +54,10 @@ class ProductMessagingSubscriber:
             logger.error("Invalid OrderCreated event structure. Skipping processing.")
             return
 
+        slug = self._restore_tenant(event_data)
+
         # Background transactions require manual session extraction to guarantee execution safety
-        async with db._session_maker() as session:
+        async with db.session_scope(tenant_slug=slug) as session:
             try:
                 # 1. Deduplication Check (Inbox Pattern)
                 is_duplicate = await check_and_register_event(session, event_id)
@@ -100,7 +110,9 @@ class ProductMessagingSubscriber:
             logger.error("Missing order_id in PaymentFailed payload. Skipping compensation.")
             return
 
-        async with db._session_maker() as session:
+        self._restore_tenant(event_data)
+
+        async with db.session_scope() as session:
             try:
                 # Deduplication Check (Inbox Pattern)
                 comp_event_id = f"comp-{event_id}"

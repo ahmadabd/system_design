@@ -16,7 +16,7 @@ class HTTPUserClient(UserClient):
         self.redis = aioredis.from_url(redis_url, decode_responses=True) if redis_url else None
 
     async def verify_user(self, user_id: int) -> bool:
-        url = f"{self.base_url}/users/{user_id}"
+        url = f"{self.base_url}/{user_id}"
         try:
             logger.info(f"Verifying user {user_id} via HTTP: {url}")
             response = await self.http_client.get(url)
@@ -49,10 +49,16 @@ class HTTPProductClient(ProductClient):
         self.redis = aioredis.from_url(redis_url, decode_responses=True) if redis_url else None
 
     async def get_product_details(self, product_id: int) -> dict | None:
-        url = f"{self.base_url}/products/{product_id}"
+        from shared.common.tenant import get_tenant_or_none
+        tenant_ctx = get_tenant_or_none()
+        headers = {}
+        if tenant_ctx:
+            headers["X-Tenant-ID"] = tenant_ctx.slug
+
+        url = f"{self.base_url}/{product_id}"
         try:
-            logger.info(f"Fetching product {product_id} details via HTTP: {url}")
-            response = await self.http_client.get(url)
+            logger.info(f"Fetching product {product_id} details via HTTP: {url} (Tenant: {getattr(tenant_ctx, 'slug', 'None')})")
+            response = await self.http_client.get(url, headers=headers)
             if response.status_code == 200:
                 logger.info(f"Product {product_id} details fetched successfully.")
                 return response.json()
@@ -62,7 +68,7 @@ class HTTPProductClient(ProductClient):
 
         # If HTTP call failed, attempt cache fallback
         if self.redis:
-            cache_key = f"cache:product:{product_id}"
+            cache_key = f"tenant:{tenant_ctx.slug}:cache:product:{product_id}" if tenant_ctx else f"cache:product:{product_id}"
             try:
                 cached_val = await self.redis.get(cache_key)
                 if cached_val:

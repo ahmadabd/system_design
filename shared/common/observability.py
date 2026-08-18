@@ -67,12 +67,17 @@ def setup_observability(app: FastAPI, service_name: str) -> None:
     provider = TracerProvider(resource=resource)
     try:
         otlp_exporter = OTLPSpanExporter(endpoint=endpoint, insecure=True)
-        span_processor = BatchSpanProcessor(otlp_exporter)
+        span_processor = BatchSpanProcessor(
+            otlp_exporter,
+            schedule_delay_millis=1000,
+            max_export_batch_size=64
+        )
         provider.add_span_processor(span_processor)
         trace.set_tracer_provider(provider)
         
         # Instrument FastAPI app, excluding health/metrics checks from traces
-        FastAPIInstrumentor.instrument_app(app, excluded_urls="health,metrics")
+        FastAPIInstrumentor.instrument_app(app, tracer_provider=provider, excluded_urls="health,metrics")
+        app.middleware_stack = None
         logger.info("OpenTelemetry FastAPI auto-instrumentation successful.")
 
         # Instrument SQLAlchemy globally to capture database spans
@@ -104,11 +109,34 @@ def setup_observability(app: FastAPI, service_name: str) -> None:
         # Integrate with standard Python logging (capture all INFO and above logs)
         otel_handler = LoggingHandler(level=logging.INFO, logger_provider=logger_provider)
         logging.getLogger().addHandler(otel_handler)
+        for uvicorn_name in ["uvicorn", "uvicorn.error", "uvicorn.access", "fastapi"]:
+            ul = logging.getLogger(uvicorn_name)
+            ul.addHandler(otel_handler)
+            ul.propagate = True
         logger.info("OpenTelemetry OTLP Logging initialized successfully.")
     except Exception as e:
         logger.error(f"Failed to initialize OpenTelemetry Logging: {e}", exc_info=True)
+
+    # 3. Request-level structured logging middleware for Loki visibility
+    from starlette.middleware.base import BaseHTTPMiddleware
+    import time
+    
+    class HTTPLoggingMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            if request.url.path in {"/health", "/metrics", "/favicon.ico"}:
+                return await call_next(request)
+            start_time = time.perf_counter()
+            response = await call_next(request)
+            duration_ms = (time.perf_counter() - start_time) * 1000.0
+            req_logger = logging.getLogger(f"{service_name}.http")
+            req_logger.info(
+                f"{request.method} {request.url.path} -> {response.status_code} ({duration_ms:.1f}ms)"
+            )
+            return response
+
+    app.add_middleware(HTTPLoggingMiddleware)
         
-    # 3. Setup Prometheus FastAPI Instrumentator
+    # 4. Setup Prometheus FastAPI Instrumentator
     try:
         Instrumentator().instrument(app).expose(app, endpoint="/metrics")
         logger.info("Prometheus metrics instrumented and exposed at /metrics")

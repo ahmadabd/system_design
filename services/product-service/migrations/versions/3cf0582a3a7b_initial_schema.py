@@ -35,6 +35,11 @@ def upgrade() -> None:
     sa.Column('processed', sa.Boolean(), nullable=True),
     sa.PrimaryKeyConstraint('id')
     )
+    op.create_table('idempotent_consumers',
+    sa.Column('message_id', sa.String(length=255), nullable=False),
+    sa.Column('processed_at', sa.DateTime(), nullable=True),
+    sa.PrimaryKeyConstraint('message_id')
+    )
     op.create_table('stores',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('name', sa.String(length=100), nullable=False),
@@ -63,6 +68,7 @@ def downgrade() -> None:
     op.drop_table('products')
     op.drop_index(op.f('ix_stores_id'), table_name='stores')
     op.drop_table('stores')
+    op.drop_table('idempotent_consumers')
     op.drop_table('outbox_messages')
     op.drop_index(op.f('ix_materialized_reservations_order_id'), table_name='materialized_reservations')
     op.drop_table('materialized_reservations')

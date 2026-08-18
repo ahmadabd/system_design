@@ -14,6 +14,13 @@ class PaymentMessagingSubscriber:
     def __init__(self, mq_manager: KafkaManager):
         self.mq_manager = mq_manager
 
+    def _restore_tenant(self, event_data: dict) -> str | None:
+        from shared.common.tenant import set_tenant, TenantContext
+        slug = event_data.get("metadata", {}).get("tenant_slug")
+        if slug:
+            set_tenant(TenantContext(slug=slug))
+        return slug
+
     async def start_listening(self) -> None:
         """Register consumer queue binding to integration topics"""
         logger.info("Registering Kafka listener for 'order.created' integration events for materialization...")
@@ -47,7 +54,9 @@ class PaymentMessagingSubscriber:
             logger.error("Invalid OrderCreated event structure for materialization. Skipping processing.")
             return
 
-        async with db._session_maker() as session:
+        slug = self._restore_tenant(event_data)
+
+        async with db.session_scope(tenant_slug=slug) as session:
             try:
                 # 1. Deduplication Check (Inbox Pattern)
                 # For materialization, we prepend 'mat-' to the event_id
@@ -89,7 +98,9 @@ class PaymentMessagingSubscriber:
             logger.error("Missing order_id in InventoryReserved payload. Skipping processing.")
             return
 
-        async with db._session_maker() as session:
+        slug = self._restore_tenant(event_data)
+
+        async with db.session_scope(tenant_slug=slug) as session:
             try:
                 # 1. Deduplication Check (Inbox Pattern)
                 is_duplicate = await check_and_register_event(session, event_id)

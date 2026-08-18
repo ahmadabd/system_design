@@ -61,6 +61,14 @@ async def circuit_breaker_exception_handler(request: Request, exc: CircuitBreake
         content={"detail": f"Service temporarily unavailable: {str(exc)}"}
     )
 
+@app.get("/health", tags=["System"])
+async def health_check():
+    """System health validation check"""
+    return {"status": "healthy", "service": "user-service"}
+
+# Include inbound REST router
+app.include_router(router)
+
 # Unify OpenTelemetry tracing, structured JSON logging, and Prometheus metrics
 setup_observability(app, settings.SERVICE_NAME)
 
@@ -69,11 +77,3 @@ register_graceful_shutdown(
     app, 
     [outbox_publisher.stop, db.close, mq_manager.close]
 )
-
-@app.get("/health", tags=["System"])
-async def health_check():
-    """System health validation check"""
-    return {"status": "healthy", "service": "user-service"}
-
-# Include inbound REST router
-app.include_router(router)

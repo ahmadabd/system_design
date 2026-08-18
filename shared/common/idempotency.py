@@ -105,9 +105,11 @@ def idempotent_api(manager_instance: IdempotencyManager, expire_seconds: int = 8
                     detail="Missing required X-Idempotency-Key header."
                 )
 
-            # Route prefix + key to prevent clashes across microservices in shared Redis
             service_prefix = os.getenv("SERVICE_NAME", "default")
-            redis_key = f"idem:{service_prefix}:{idempotency_key}"
+            from shared.common.tenant import get_tenant_or_none
+            tenant = get_tenant_or_none()
+            prefix = f"tenant:{tenant.slug}:" if tenant else ""
+            redis_key = f"{prefix}idem:{service_prefix}:{idempotency_key}"
 
             try:
                 is_new, cached_response = await manager_instance.check_and_lock(redis_key)

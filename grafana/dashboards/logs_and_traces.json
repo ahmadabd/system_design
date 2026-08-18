@@ -35,8 +35,8 @@
             "type": "loki",
             "uid": "Loki"
           },
-          "expr": "sum by (detected_level) (count_over_time({service_name=~\"$service_name\"} [5m]))",
-          "legendFormat": "{{detected_level}}",
+          "expr": "sum by (service_name, detected_level) (count_over_time({service_name=~\"${service_name:regex}\"}[5m])) or sum by (service_name) (count_over_time({service_name=~\"${service_name:regex}\"}[5m]))",
+          "legendFormat": "{{service_name}} - {{detected_level}}",
           "refId": "A"
         }
       ],
@@ -71,7 +71,7 @@
             "type": "loki",
             "uid": "Loki"
           },
-          "expr": "{service_name=~\"$service_name\"}",
+          "expr": "{service_name=~\"${service_name:regex}\"}",
           "refId": "A"
         }
       ],
@@ -89,6 +89,12 @@
   "templating": {
     "list": [
       {
+        "allValue": ".+",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
         "datasource": {
           "type": "loki",
           "uid": "Loki"
@@ -104,7 +110,7 @@
     ]
   },
   "time": {
-    "from": "now-15m",
+    "from": "now-1h",
     "to": "now"
   },
   "title": "Backend Logs & Traces",

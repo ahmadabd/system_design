@@ -13,6 +13,10 @@ class ProductMessagingPublisher:
 
     async def publish_inventory_reserved(self, event: InventoryReservedEvent) -> None:
         """Queue an InventoryReservedEvent into the database outbox"""
+        from shared.common.tenant import get_tenant_or_none
+        tenant = get_tenant_or_none()
+        event.metadata.tenant_slug = tenant.slug if tenant else None
+
         event_dict = event.model_dump()
         event_dict["metadata"]["timestamp"] = event.metadata.timestamp.isoformat()
         
@@ -22,6 +26,10 @@ class ProductMessagingPublisher:
 
     async def publish_inventory_failed(self, event: InventoryFailedEvent) -> None:
         """Queue an InventoryFailedEvent into the database outbox"""
+        from shared.common.tenant import get_tenant_or_none
+        tenant = get_tenant_or_none()
+        event.metadata.tenant_slug = tenant.slug if tenant else None
+
         event_dict = event.model_dump()
         event_dict["metadata"]["timestamp"] = event.metadata.timestamp.isoformat()
         
@@ -31,6 +39,10 @@ class ProductMessagingPublisher:
 
     async def publish_store_registered(self, event) -> None:
         """Queue a StoreRegisteredEvent into the database outbox"""
+        from shared.common.tenant import get_tenant_or_none
+        tenant = get_tenant_or_none()
+        event.metadata.tenant_slug = tenant.slug if tenant else None
+
         event_dict = event.model_dump()
         event_dict["metadata"]["timestamp"] = event.metadata.timestamp.isoformat()
         

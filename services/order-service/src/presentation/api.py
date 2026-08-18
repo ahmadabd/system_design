@@ -29,12 +29,24 @@ user_client = HTTPUserClient(http_client, settings.USER_SERVICE_URL, redis_url=s
 product_client = HTTPProductClient(http_client, settings.PRODUCT_SERVICE_URL, redis_url=settings.REDIS_URL)
 
 async def get_order_service(
+    request: Request,
     session: AsyncSession = Depends(db.get_session)
 ) -> OrderApplicationService:
     """Dependency injector mapping persistence adapters to core use cases"""
+    # Re-set the tenant ContextVar from the raw request header.
+    # We do this here (inside the route handler's task) because Starlette's
+    # BaseHTTPMiddleware spawns call_next in a separate task, losing any
+    # ContextVars set in dispatch(). Reading the header directly is reliable.
+    from shared.common.tenant import set_tenant, TenantContext
+    slug = request.headers.get("X-Tenant-ID") or getattr(request.state, "tenant_slug", None)
+    if slug:
+        set_tenant(TenantContext(slug=slug))
+
     repo = SQLAlchemyOrderRepository(session)
     publisher = OrderMessagingPublisher(session)
     return OrderApplicationService(repo, publisher, user_client=user_client, product_client=product_client)
+
+
 
 @router.post("/", response_model=OrderDTO, status_code=status.HTTP_201_CREATED)
 @idempotent_api(idempotency_manager)

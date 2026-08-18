@@ -6,6 +6,7 @@ class EventMetadata(BaseModel):
     event_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     version: str = "1.0"
+    tenant_slug: str | None = None
 
 class DomainEvent(BaseModel):
     metadata: EventMetadata = Field(default_factory=EventMetadata)

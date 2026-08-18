@@ -315,7 +315,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "outbox_backlog_size",
+          "expr": "outbox_backlog_size or vector(0)",
           "legendFormat": "{{service_name}} backlog",
           "range": true,
           "refId": "A"
@@ -1077,7 +1077,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(rate(messaging_process_duration_seconds_sum[1m])) by (topic) / sum(rate(messaging_process_duration_seconds_count[1m])) by (topic)",
+          "expr": "(sum(rate(messaging_process_duration_seconds_sum[1m])) by (topic) / (sum(rate(messaging_process_duration_seconds_count[1m])) by (topic) > 0)) or vector(0)",
           "legendFormat": "{{topic}}",
           "range": true,
           "refId": "A"

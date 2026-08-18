@@ -213,13 +213,18 @@ class KafkaManager:
                         try:
                             logger.info(f"Received event from Kafka topic '{topic}' in group '{group_id}'")
                             
-                            # Extract OTel context from Kafka message headers
+                            # Extract OTel context from Kafka message headers or payload metadata
                             headers_dict = {}
                             if msg.headers:
                                 for k, v in msg.headers:
                                     key_str = k.decode("utf-8") if isinstance(k, bytes) else k
                                     val_str = v.decode("utf-8") if isinstance(v, bytes) else v
                                     headers_dict[key_str] = val_str
+                            
+                            if "traceparent" not in headers_dict and isinstance(msg.value, dict):
+                                meta_headers = msg.value.get("metadata", {}).get("trace_headers")
+                                if isinstance(meta_headers, dict):
+                                    headers_dict.update(meta_headers)
                                     
                             from opentelemetry import trace
                             from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator

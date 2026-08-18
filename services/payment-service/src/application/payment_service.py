@@ -48,9 +48,15 @@ class PaymentApplicationService:
             # Downstream validation HTTP query fallback
             client = ResilientHTTPClient(timeout=5.0)
             try:
+                from shared.common.tenant import get_tenant_or_none
+                tenant_ctx = get_tenant_or_none()
+                headers = {}
+                if tenant_ctx:
+                    headers["X-Tenant-ID"] = tenant_ctx.slug
+
                 url = f"{settings.ORDER_SERVICE_URL}/{order_id}"
-                logger.info(f"Querying order-service (HTTP Fallback): GET {url}")
-                response = await client.get(url)
+                logger.info(f"Querying order-service (HTTP Fallback): GET {url} (Tenant: {getattr(tenant_ctx, 'slug', 'None')})")
+                response = await client.get(url, headers=headers)
                 response.raise_for_status()
                 fallback_data = response.json()
                 amount = fallback_data.get("total_price")
@@ -115,10 +121,10 @@ class PaymentApplicationService:
                 await asyncio.sleep(4.0)
                 raise TimeoutError("Credit card gateway connection timed out.")
 
-            # Scenario B: Simulated Rejection for Sagas (e.g. price > $1000)
-            if amount > 1000.0:
-                logger.warning(f"SIMULATION REJECTION: Order {order_id} amount {amount} exceeds limit. Rejecting payment.")
-                raise ValueError(f"Insufficient funds: Transaction amount ${amount} exceeds limit of $1000.")
+            # Scenario B: Simulated Rejection for Sagas (explicit test trigger: amount >= 100000.0 or payment_method == "SIMULATE_FAIL")
+            if amount >= 100000.0 or payment_method == "SIMULATE_FAIL":
+                logger.warning(f"SIMULATION REJECTION: Order {order_id} amount {amount} / method {payment_method} triggered rejection.")
+                raise ValueError(f"Insufficient funds: Transaction amount ${amount} exceeds limit.")
 
             # Success Path
             logger.info(f"Payment gateway approved transaction of ${amount} for Order {order_id}")

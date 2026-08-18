@@ -49,6 +49,14 @@ async def save_to_outbox(session: AsyncSession, topic: str, payload: dict) -> No
     Must be called within an active transaction session.
     Automatically propagates OpenTelemetry trace context.
     """
+    # Propagate tenant context if present
+    from shared.common.tenant import get_tenant_or_none
+    tenant_ctx = get_tenant_or_none()
+    if tenant_ctx:
+        if "metadata" not in payload:
+            payload["metadata"] = {}
+        payload["metadata"]["tenant_slug"] = tenant_ctx.slug
+
     if otel_available:
         try:
             trace_headers = {}
@@ -70,12 +78,13 @@ async def save_to_outbox(session: AsyncSession, topic: str, payload: dict) -> No
 
 class OutboxPublisher:
     """Background task runner to poll the local outbox_messages table and publish to Kafka"""
-    def __init__(self, db: Database, mq_manager: KafkaManager, poll_interval: float = 0.2):
+    def __init__(self, db: Database, mq_manager: KafkaManager, poll_interval: float = 0.2, tenant_registry=None):
         self.db = db
         self.mq_manager = mq_manager
         self.poll_interval = poll_interval
         self._is_running = False
         self._task = None
+        self.tenant_registry = tenant_registry
 
     def start(self) -> None:
         if not self._is_running:
@@ -96,14 +105,23 @@ class OutboxPublisher:
     async def _publish_loop(self) -> None:
         # Give services a small warming-up buffer before reading outbox
         await asyncio.sleep(2.0)
+        from shared.common.tenant import set_tenant, TenantContext
         while self._is_running:
             try:
-                await self._publish_pending()
+                if self.tenant_registry:
+                    slugs = self.tenant_registry.list_all()
+                else:
+                    slugs = [None]
+                for slug in slugs:
+                    try:
+                        await self._publish_pending(tenant_slug=slug)
+                    except Exception as tenant_err:
+                        logger.debug(f"OutboxPublisher: skipped unready tenant {slug}: {tenant_err}")
             except Exception as e:
                 logger.error(f"Error in outbox publishing loop: {e}", exc_info=True)
             await asyncio.sleep(self.poll_interval)
 
-    async def _publish_pending(self) -> None:
+    async def _publish_pending(self, tenant_slug: str = None) -> None:
         # Ensure we are connected to Kafka
         if not self.mq_manager.producer:
             try:
@@ -112,7 +130,7 @@ class OutboxPublisher:
                 logger.warning(f"Outbox publisher cannot connect to Kafka: {conn_err}. Will retry...")
                 return
 
-        async with self.db._session_maker() as session:
+        async with self.db.session_scope(tenant_slug=tenant_slug) as session:
             try:
                 # Update backlog count metric inside suppression context
                 if suppress_instrumentation:

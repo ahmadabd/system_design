@@ -1,4 +1,5 @@
 import os
+from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import (
     create_async_engine,
@@ -82,7 +83,7 @@ class Database:
 
 
     def run_migrations(self, alembic_ini_path: str = "alembic.ini") -> None:
-        """Run database migrations programmatically using Alembic"""
+        """Run database migrations programmatically using Alembic with sync psycopg2 driver"""
         from alembic.config import Config
         from alembic import command
         import logging
@@ -91,11 +92,39 @@ class Database:
         alembic_logger.setLevel(logging.INFO)
 
         config = Config(alembic_ini_path)
-        # Force database URL from engine connection instance
+        # Force database URL from engine connection instance, converting to sync psycopg2 driver
         db_url = self._engine.url.render_as_string(hide_password=False)
+        db_url = db_url.replace("+asyncpg", "+psycopg2")
         config.set_main_option("sqlalchemy.url", db_url)
         
         command.upgrade(config, "head")
+
+    async def run_migrations_for_schema(self, schema: str, alembic_ini_path: str = "alembic.ini") -> None:
+        """Run Alembic upgrade head scoped to a specific PostgreSQL schema."""
+        import asyncio
+        await asyncio.to_thread(self._run_migrations_sync, schema, alembic_ini_path)
+
+    def _run_migrations_sync(self, schema: str, alembic_ini_path: str = "alembic.ini") -> None:
+        from alembic.config import Config
+        from alembic import command
+        config = Config(alembic_ini_path)
+        db_url = self._engine.url.render_as_string(hide_password=False)
+        # asyncpg driver is async-only; Alembic needs sync psycopg2
+        db_url = db_url.replace("+asyncpg", "+psycopg2")
+        config.set_main_option("sqlalchemy.url", db_url)
+        config.set_main_option("target_schema", schema)
+        command.upgrade(config, "head")
+
+    @asynccontextmanager
+    async def session_scope(self, request: Request = None, tenant_slug: str = None) -> AsyncGenerator[AsyncSession, None]:
+        """Asynchronous context manager for background workers, tasks, and scripts."""
+        from shared.common.tenant import set_tenant, TenantContext
+        if tenant_slug:
+            set_tenant(TenantContext(slug=tenant_slug))
+        else:
+            set_tenant(None)
+        async for session in self.get_session(request=request):
+            yield session
 
     async def get_session(self, request: Request = None) -> AsyncGenerator[AsyncSession, None]:
         """Dependency generator to retrieve DB sessions with automatic cleanup and circuit breaker wrapping"""
@@ -123,6 +152,25 @@ class Database:
             postgresql_connections_max.labels(db=db_name).set(self._engine.pool.size())
 
         async with self._session_maker() as session:
+            from shared.common.tenant import get_tenant_or_none, set_tenant, TenantContext
+            tenant = get_tenant_or_none()
+
+            # BaseHTTPMiddleware loses ContextVars across task boundary — re-hydrate from request.state
+            if tenant is None and request is not None:
+                slug = getattr(request.state, "tenant_slug", None)
+                if slug:
+                    set_tenant(TenantContext(slug=slug))
+                    tenant = TenantContext(slug=slug)
+
+            if tenant and tenant.slug:
+                await session.execute(
+                    text(f"SET search_path TO {tenant.slug}, public")
+                )
+            else:
+                await session.execute(
+                    text("SET search_path TO public")
+                )
+
             try:
                 yield session
                 await session.commit()
@@ -136,6 +184,11 @@ class Database:
                     await self.db_breaker._on_failure(e)
                 raise e
             finally:
+                try:
+                    await session.execute(text("SET search_path TO public"))
+                    await session.commit()
+                except Exception:
+                    pass
                 await session.close()
 
 
@@ -151,6 +204,13 @@ class OutboxMessage(Base):
     payload = Column(JSON, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     processed = Column(Boolean, default=False)
+
+class IdempotentConsumerDB(Base):
+    """SQL-backed Inbox Pattern message deduplication table"""
+    __tablename__ = "idempotent_consumers"
+
+    message_id = Column(String(255), primary_key=True)
+    processed_at = Column(DateTime, default=datetime.utcnow)
 
 
 

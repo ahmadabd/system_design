@@ -63,6 +63,13 @@ class OrderMessagingSubscriber:
         event_id = event_data.get("metadata", {}).get("event_id", f"reserved-fallback-{order_id}")
         logger.info(f"SAGA PROGRESS: Received InventoryReserved event (ID: {event_id}): Order={order_id}. Waiting for payment confirmation.")
 
+    def _restore_tenant(self, event_data: dict) -> str | None:
+        from shared.common.tenant import set_tenant, TenantContext
+        slug = event_data.get("metadata", {}).get("tenant_slug")
+        if slug:
+            set_tenant(TenantContext(slug=slug))
+        return slug
+
     async def _handle_inventory_failed(self, event_data: dict) -> None:
         """Process InventoryFailed event and cancel the order"""
         order_id = event_data.get("order_id")
@@ -74,7 +81,9 @@ class OrderMessagingSubscriber:
             logger.error("Missing order_id in InventoryFailed payload. Skipping.")
             return
 
-        async with db._session_maker() as session:
+        slug = self._restore_tenant(event_data)
+
+        async with db.session_scope(tenant_slug=slug) as session:
             try:
                 # 1. Deduplication Check (Inbox Pattern)
                 is_duplicate = await check_and_register_event(session, event_id)
@@ -93,7 +102,7 @@ class OrderMessagingSubscriber:
                 command = CancelOrderCommand(order_id=order_id, reason=reason)
                 await service.cancel_order(command)
                 await session.commit()
-                await self._evict_order_cache(order_id)
+                await self._evict_order_cache(order_id, slug=slug)
                 logger.info(f"Cancelled Order {order_id} successfully under event ID {event_id}")
             except Exception as e:
                 logger.error(f"Error handling stock reserved failure callback for order {order_id}: {e}", exc_info=True)
@@ -110,7 +119,9 @@ class OrderMessagingSubscriber:
             logger.error("Missing order_id in PaymentSucceeded payload. Skipping.")
             return
 
-        async with db._session_maker() as session:
+        slug = self._restore_tenant(event_data)
+
+        async with db.session_scope(tenant_slug=slug) as session:
             try:
                 # 1. Deduplication Check (Inbox Pattern)
                 is_duplicate = await check_and_register_event(session, event_id)
@@ -129,7 +140,7 @@ class OrderMessagingSubscriber:
                 command = ConfirmOrderCommand(order_id=order_id)
                 await service.confirm_order(command)
                 await session.commit()
-                await self._evict_order_cache(order_id)
+                await self._evict_order_cache(order_id, slug=slug)
                 logger.info(f"Confirmed Order {order_id} successfully under event ID {event_id}")
             except Exception as e:
                 logger.error(f"Error handling payment succeeded callback for order {order_id}: {e}", exc_info=True)
@@ -147,7 +158,9 @@ class OrderMessagingSubscriber:
             logger.error("Missing order_id in PaymentFailed payload. Skipping.")
             return
 
-        async with db._session_maker() as session:
+        slug = self._restore_tenant(event_data)
+
+        async with db.session_scope(tenant_slug=slug) as session:
             try:
                 # 1. Deduplication Check (Inbox Pattern)
                 is_duplicate = await check_and_register_event(session, event_id)
@@ -166,7 +179,7 @@ class OrderMessagingSubscriber:
                 command = CancelOrderCommand(order_id=order_id, reason=reason)
                 await service.cancel_order(command)
                 await session.commit()
-                await self._evict_order_cache(order_id)
+                await self._evict_order_cache(order_id, slug=slug)
                 logger.info(f"Cancelled Order {order_id} successfully under event ID {event_id}")
             except Exception as e:
                 logger.error(f"Error handling payment failed callback for order {order_id}: {e}", exc_info=True)
@@ -183,7 +196,9 @@ class OrderMessagingSubscriber:
             logger.error("Invalid PaymentSessionCreated event structure. Skipping.")
             return
 
-        async with db._session_maker() as session:
+        slug = self._restore_tenant(event_data)
+
+        async with db.session_scope(tenant_slug=slug) as session:
             try:
                 # 1. Deduplication Check (Inbox Pattern)
                 is_duplicate = await check_and_register_event(session, event_id)
@@ -202,17 +217,17 @@ class OrderMessagingSubscriber:
                 command = SetAwaitingPaymentCommand(order_id=order_id, payment_url=checkout_url)
                 await service.set_awaiting_payment(command)
                 await session.commit()
-                await self._evict_order_cache(order_id)
+                await self._evict_order_cache(order_id, slug=slug)
                 logger.info(f"Successfully processed PaymentSessionCreated for Order {order_id} under event ID {event_id}")
             except Exception as e:
                 logger.error(f"Error handling payment session created callback for order {order_id}: {e}", exc_info=True)
                 await session.rollback()
 
-    async def _evict_order_cache(self, order_id: int) -> None:
+    async def _evict_order_cache(self, order_id: int, slug: str = None) -> None:
         """Evict the cached order DTO from Redis if redis_client is set"""
         if self.redis_client and order_id:
             try:
-                cache_key = f"cache:order:{order_id}"
+                cache_key = f"tenant:{slug}:cache:order:{order_id}" if slug else f"cache:order:{order_id}"
                 await self.redis_client.delete(cache_key)
                 logger.info(f"Evicted Redis cache for key: '{cache_key}'")
             except Exception as e:

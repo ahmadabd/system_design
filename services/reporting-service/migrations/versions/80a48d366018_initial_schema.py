@@ -28,6 +28,11 @@ def upgrade() -> None:
     sa.Column('processed', sa.Boolean(), nullable=True),
     sa.PrimaryKeyConstraint('id')
     )
+    op.create_table('idempotent_consumers',
+    sa.Column('message_id', sa.String(length=255), nullable=False),
+    sa.Column('processed_at', sa.DateTime(), nullable=True),
+    sa.PrimaryKeyConstraint('message_id')
+    )
     op.create_table('reporting_orders',
     sa.Column('order_id', sa.Integer(), nullable=False),
     sa.Column('user_id', sa.Integer(), nullable=False),
@@ -69,5 +74,6 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_reporting_orders_user_id'), table_name='reporting_orders')
     op.drop_index(op.f('ix_reporting_orders_order_id'), table_name='reporting_orders')
     op.drop_table('reporting_orders')
+    op.drop_table('idempotent_consumers')
     op.drop_table('outbox_messages')
     # ### end Alembic commands ###

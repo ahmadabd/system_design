@@ -42,7 +42,7 @@
             "type": "prometheus",
             "uid": "Prometheus"
           },
-          "expr": "sum(rate(webhook_delivery_attempts_total[1m])) by (store_id, success)",
+          "expr": "sum(rate(webhook_delivery_attempts_total[1m])) by (store_id, success) or vector(0)",
           "legendFormat": "Store {{store_id}} (Success: {{success}})",
           "refId": "A"
         }
@@ -68,7 +68,7 @@
             "type": "prometheus",
             "uid": "Prometheus"
           },
-          "expr": "circuit_breaker_state{name=~\"store-webhook-.*\"}",
+          "expr": "circuit_breaker_state{name=~\"store-webhook-.*\"} or vector(0)",
           "legendFormat": "{{name}}",
           "refId": "A"
         }
@@ -94,7 +94,7 @@
             "type": "prometheus",
             "uid": "Prometheus"
           },
-          "expr": "sum(rate(webhook_delivery_duration_seconds_sum[1m])) by (store_id) / sum(rate(webhook_delivery_duration_seconds_count[1m])) by (store_id)",
+          "expr": "(sum(rate(webhook_delivery_duration_seconds_sum[1m])) by (store_id) / (sum(rate(webhook_delivery_duration_seconds_count[1m])) by (store_id) > 0)) or vector(0)",
           "legendFormat": "Store {{store_id}}",
           "refId": "A"
         }
@@ -120,7 +120,7 @@
             "type": "prometheus",
             "uid": "Prometheus"
           },
-          "expr": "sum(webhook_partition_pauses_total) by (store_id, partition)",
+          "expr": "sum(webhook_partition_pauses_total) by (store_id, partition) or vector(0)",
           "legendFormat": "Store {{store_id}} (Partition {{partition}})",
           "refId": "A"
         }

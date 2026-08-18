@@ -39,15 +39,54 @@ class ResilientHTTPClient:
         breaker = self._get_breaker(host)
 
         async def _execute_call() -> httpx.Response:
-            response = await self.client.request(method, url, **kwargs)
-            # Treat HTTP 5xx Server Errors as failures to trip the circuit
-            if response.status_code >= 500:
-                logger.error(
-                    f"ResilientHTTPClient: Downstream host '{host}' returned HTTP {response.status_code}"
-                )
-                # Raise HTTPStatusError so it is caught by expected_exceptions and trips the breaker
-                response.raise_for_status()
-            return response
+            from shared.common.tenant import get_tenant_or_none
+            
+            kwargs.setdefault("headers", {})
+
+            # Auto-inject tenant context header for downstream service
+            tenant_ctx = get_tenant_or_none()
+            if tenant_ctx:
+                kwargs["headers"]["X-Tenant-ID"] = tenant_ctx.slug
+
+            # Propagate OpenTelemetry distributed trace context
+            try:
+                from opentelemetry import trace
+                from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+                
+                TraceContextTextMapPropagator().inject(kwargs["headers"])
+                tracer = trace.get_tracer("http-client")
+                
+                with tracer.start_as_current_span(
+                    name=f"HTTP {method.upper()} {parsed.path or '/'}",
+                    kind=trace.SpanKind.CLIENT
+                ) as span:
+                    span.set_attribute("http.method", method.upper())
+                    span.set_attribute("http.url", url)
+                    span.set_attribute("http.host", host)
+                    if tenant_ctx:
+                        span.set_attribute("tenant.id", tenant_ctx.slug)
+
+                    # Re-inject inside active client span so downstream sees this span as parent
+                    TraceContextTextMapPropagator().inject(kwargs["headers"])
+
+                    response = await self.client.request(method, url, **kwargs)
+                    span.set_attribute("http.status_code", response.status_code)
+                    
+                    # Treat HTTP 5xx Server Errors as failures to trip the circuit
+                    if response.status_code >= 500:
+                        logger.error(
+                            f"ResilientHTTPClient: Downstream host '{host}' returned HTTP {response.status_code}"
+                        )
+                        response.raise_for_status()
+                    return response
+            except ImportError:
+                response = await self.client.request(method, url, **kwargs)
+                if response.status_code >= 500:
+                    logger.error(
+                        f"ResilientHTTPClient: Downstream host '{host}' returned HTTP {response.status_code}"
+                    )
+                    response.raise_for_status()
+                return response
 
         return await breaker.call(_execute_call)
 

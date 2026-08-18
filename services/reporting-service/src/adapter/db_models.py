@@ -2,8 +2,9 @@ from sqlalchemy import Column, Integer, String, Float
 from shared.common.database import Base
 
 class ReportingProfileDB(Base):
-    """SQLAlchemy model for customer profiles reporting table"""
+    """SQLAlchemy model for customer profiles reporting table (Global Public Schema)"""
     __tablename__ = "reporting_profiles"
+    __table_args__ = {"schema": "public"}
 
     user_id = Column(Integer, primary_key=True, index=True)
     username = Column(String(50), nullable=False)
@@ -11,8 +12,9 @@ class ReportingProfileDB(Base):
 
 
 class ReportingOrderDB(Base):
-    """SQLAlchemy model for orders reporting table"""
+    """SQLAlchemy model for orders reporting table (Global Public Schema)"""
     __tablename__ = "reporting_orders"
+    __table_args__ = {"schema": "public"}
 
     order_id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, nullable=False, index=True)
@@ -24,8 +26,9 @@ class ReportingOrderDB(Base):
 
 
 class ReportingPaymentDB(Base):
-    """SQLAlchemy model for payments reporting table"""
+    """SQLAlchemy model for payments reporting table (Global Public Schema)"""
     __tablename__ = "reporting_payments"
+    __table_args__ = {"schema": "public"}
 
     payment_id = Column(String(255), primary_key=True, index=True)
     order_id = Column(Integer, nullable=False, index=True)
