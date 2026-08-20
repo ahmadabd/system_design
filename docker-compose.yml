@@ -251,6 +251,45 @@ services:
     networks:
       - ecommerce-network
 
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - ecommerce-network
+
+  support-service:
+    build:
+      context: .
+      dockerfile: services/support-service/Dockerfile
+    container_name: support-service
+    ports:
+      - "${SUPPORT_SERVICE_PORT:-8007}:${SUPPORT_SERVICE_PORT:-8007}"
+    environment:
+      - PORT=${SUPPORT_SERVICE_PORT:-8007}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - SERVICE_NAME=support-service
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-nvidia/nemotron-3.5-lightning:free}
+      - QDRANT_URL=http://qdrant:6333
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-sys_design_secure_cache_pass_2026}@redis:${REDIS_PORT:-6379}
+      - KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS:-kafka:29092}
+      - ORDER_SERVICE_URL=http://order-service:8003
+      - PRODUCT_SERVICE_URL=http://product-service:8002
+      - USER_SERVICE_URL=http://user-service:8001
+    depends_on:
+      - qdrant
+      - redis
+      - kafka
+    networks:
+      - ecommerce-network
+
   traefik-master:
     image: traefik:v3.7
     container_name: traefik-master
@@ -269,6 +308,7 @@ services:
       - payment-service
       - reporting-service
       - webhook-service
+      - support-service
 
   traefik-backup:
     image: traefik:v3.7
@@ -286,6 +326,7 @@ services:
       - payment-service
       - reporting-service
       - webhook-service
+      - support-service
 
   keepalived-master:
     image: osixia/keepalived:latest
@@ -367,5 +408,7 @@ volumes:
   payment_db_data:
   reporting_db_data:
   webhook_db_data:
+  qdrant_data:
+
 
 

@@ -76,3 +76,13 @@ groups:
         annotations:
           summary: "Events routing to Dead Letter Queue for {{ $labels.original_topic }}"
           description: "Consumer processing has failed repeatedly, causing events to route to DLQ topic '{{ $labels.original_topic }}.deadletter'."
+
+      - alert: AICircuitBreakerTripped
+        expr: circuit_breaker_state{name=~"qdrant-breaker|openrouter-breaker|order-client-breaker"} == 1
+        for: 0s
+        labels:
+          severity: critical
+        annotations:
+          summary: "AI Circuit Breaker OPEN: {{ $labels.name }}"
+          description: "Circuit breaker {{ $labels.name }} has tripped to OPEN due to consecutive failures. AI Support will fast-fail or degrade gracefully."
+

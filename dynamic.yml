@@ -60,6 +60,16 @@ http:
         - "strip-webhooks"
       service: webhook-service
 
+    support-router:
+      rule: "PathPrefix(`/support`)"
+      entryPoints:
+        - web
+      middlewares:
+        - "rate-limit"
+        - "load-shedding"
+        - "strip-support"
+      service: support-service
+
 
   middlewares:
     load-shedding:
@@ -106,6 +116,11 @@ http:
       stripPrefix:
         prefixes:
           - "/webhooks"
+
+    strip-support:
+      stripPrefix:
+        prefixes:
+          - "/support"
 
 
   services:
@@ -162,3 +177,12 @@ http:
           timeout: 1s
         servers:
           - url: "http://webhook-service:8006"
+
+    support-service:
+      loadBalancer:
+        healthCheck:
+          path: /health
+          interval: 2s
+          timeout: 1s
+        servers:
+          - url: "http://support-service:8007"
