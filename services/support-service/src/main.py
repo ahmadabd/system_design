@@ -15,18 +15,19 @@ async def lifespan(app: FastAPI):
     """Lifecycle coordinator establishing Qdrant collection, initial indexing, and resource management"""
     logger.info("Initializing Support Service resources in lifespan context...")
     
-    # 1. Ensure Qdrant collection is ready
+    # 1. Ensure Qdrant collection is ready and BM25 index is loaded
     try:
         qdrant_manager.ensure_collection()
-        # Check if collection is empty, trigger initial ingestion
-        info = qdrant_manager.client.get_collection(settings.QDRANT_COLLECTION_NAME)
-        if getattr(info, "points_count", 0) == 0:
-            logger.info("Qdrant collection is empty. Triggering initial knowledge base ingestion...")
-            await ingestion_service.ingest_directory()
-        else:
-            logger.info(f"Qdrant collection already has {info.points_count} points indexed.")
+        logger.info("Synchronizing Knowledge Base across Qdrant and BM25...")
+        await ingestion_service.ingest_directory()
+        
+        # Pre-warm FlashRank Cross-Encoder model
+        from src.adapter.reranker_adapter import reranker_adapter
+        _ = reranker_adapter.ranker
+        logger.info("FlashRank Cross-Encoder pre-warmed successfully.")
     except Exception as e:
-        logger.warning(f"Could not connect to Qdrant or initialize collection on startup: {e}. Will retry on demand.")
+        logger.warning(f"Could not connect to Qdrant or initialize knowledge base on startup: {e}. Will retry on demand.")
+
 
     yield
 

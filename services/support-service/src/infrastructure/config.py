@@ -22,6 +22,14 @@ class SupportSettings(BaseSettings):
     EMBEDDING_VECTOR_SIZE: int = 384
     KNOWLEDGE_BASE_DIR: str = os.getenv("KNOWLEDGE_BASE_DIR", "/app/knowledge_base")
 
+    # Hybrid Search & Cross-Encoder Reranking Settings
+    RERANKER_MODEL_NAME: str = "ms-marco-TinyBERT-L-2-v2"
+    HYBRID_DENSE_K: int = 10
+    HYBRID_SPARSE_K: int = 10
+    RERANK_TOP_K: int = 3
+    RRF_K_CONSTANT: int = 60
+
+
     # Infrastructure & Observability
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://:sys_design_secure_cache_pass_2026@redis:6379")
     OTEL_EXPORTER_OTLP_ENDPOINT: str = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317")

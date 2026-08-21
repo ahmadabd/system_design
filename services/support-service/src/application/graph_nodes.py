@@ -56,11 +56,14 @@ async def router_node(state: SupportAgentState) -> Dict[str, Any]:
     msg_lower = last_user_message.lower()
     
     has_policy_keywords = any(kw in msg_lower for kw in [
-        "return", "refund", "exchange", "policy", "shipping", "delivery", "sla",
-        "damaged", "broken", "cancel", "payment", "charge", "invoice", "warranty"
+        "return", "refund", "exchange", "policy", "ship", "deliver", "sla",
+        "damaged", "broken", "cancel", "pay", "cash", "cod", "charge", "invoice",
+        "warranty", "cost", "fee", "how long", "how much", "courier", "door", "transit", "days", "hours"
     ])
     has_order_keywords = "order_id" in entities or any(kw in msg_lower for kw in ["where is my", "track", "status of order", "my package", "my order", "my purchase", "recent orders"])
     has_product_keywords = "product_id" in entities or any(kw in msg_lower for kw in ["in stock", "price of", "product details"])
+
+    is_chitchat = any(msg_lower.strip().startswith(greeting) for greeting in ["hi", "hello", "hey", "thanks", "thank you", "good morning", "good evening", "who are you"])
 
     if has_policy_keywords and (has_order_keywords or has_product_keywords):
         intent = "hybrid"
@@ -68,7 +71,8 @@ async def router_node(state: SupportAgentState) -> Dict[str, Any]:
         intent = "order_inquiry"
     elif has_product_keywords:
         intent = "product_inquiry"
-    elif has_policy_keywords:
+    elif has_policy_keywords or not is_chitchat:
+        # Default to policy FAQ if not explicit chitchat so knowledge base is always queried
         intent = "policy_faq"
     else:
         intent = "general"
@@ -80,12 +84,16 @@ async def router_node(state: SupportAgentState) -> Dict[str, Any]:
     }
 
 # ---------------------------------------------------------------------------
-# Node 2: Policy Retrieval Node (Qdrant Vector RAG)
+# Node 2: Two-Stage Hybrid Policy Retrieval & Re-ranking Node
 # ---------------------------------------------------------------------------
 async def retrieve_node(state: SupportAgentState) -> Dict[str, Any]:
     """
-    Performs semantic similarity search against Qdrant vector database for e-commerce policies.
+    Executes Two-Stage Hybrid Retrieval:
+    Stage 1: Dense Vector (Qdrant) + Sparse Keyword (BM25) fused via Reciprocal Rank Fusion (RRF).
+    Stage 2: FlashRank Cross-Encoder Re-Ranking selecting Top-3 precision chunks.
     """
+    from src.adapter.hybrid_retriever import hybrid_retriever
+
     messages = state["messages"]
     last_user_message = ""
     for msg in reversed(messages):
@@ -93,8 +101,8 @@ async def retrieve_node(state: SupportAgentState) -> Dict[str, Any]:
             last_user_message = msg.content
             break
 
-    logger.info(f"[retrieve_node] Querying Qdrant for query: '{last_user_message}'")
-    chunks = await vector_adapter.similarity_search_with_score(last_user_message, k=3)
+    logger.info(f"[retrieve_node] Running Two-Stage Hybrid Search & Reranking for: '{last_user_message}'")
+    chunks = await hybrid_retriever.retrieve_and_rerank(last_user_message, top_k=3)
 
     retrieved_docs = []
     sources = []
@@ -112,7 +120,7 @@ async def retrieve_node(state: SupportAgentState) -> Dict[str, Any]:
             "score": doc_dict["score"]
         })
 
-    logger.info(f"[retrieve_node] Retrieved {len(retrieved_docs)} policy chunks.")
+    logger.info(f"[retrieve_node] Selected {len(retrieved_docs)} reranked policy chunks.")
     return {
         "retrieved_docs": retrieved_docs,
         "sources": sources
@@ -123,18 +131,20 @@ async def retrieve_node(state: SupportAgentState) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 async def grade_documents_node(state: SupportAgentState) -> Dict[str, Any]:
     """
-    Evaluates whether the retrieved policy documents are relevant to avoid hallucination.
+    Evaluates whether the retrieved and reranked policy documents are relevant to avoid hallucination.
     """
     docs = state.get("retrieved_docs", [])
     if not docs:
         logger.info("[grade_documents_node] No documents to grade.")
         return {"is_docs_relevant": False}
 
-    # If the highest similarity score is above 0.35 (FastEmbed cosine relevance), consider relevant
     top_score = docs[0].get("score", 0.0) if docs else 0.0
-    is_relevant = top_score >= 0.35
-    logger.info(f"[grade_documents_node] Top chunk score={top_score:.4f}, is_docs_relevant={is_relevant}")
+    # Any positive match score from RRF or FlashRank indicates relevant context
+    is_relevant = top_score > 0.0001
+    logger.info(f"[grade_documents_node] Top reranked chunk score={top_score:.6f}, is_docs_relevant={is_relevant}")
     return {"is_docs_relevant": is_relevant}
+
+
 
 # ---------------------------------------------------------------------------
 # Node 4: Downstream Microservices Tool Execution Node

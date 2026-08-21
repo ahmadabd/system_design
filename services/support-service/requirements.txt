@@ -19,3 +19,6 @@ opentelemetry-instrumentation-fastapi>=0.43b0
 opentelemetry-exporter-otlp>=1.22.0
 prometheus-fastapi-instrumentator>=6.1.0
 opentelemetry-instrumentation-redis>=0.43b0
+rank-bm25>=0.2.2
+flashrank>=0.2.9
+

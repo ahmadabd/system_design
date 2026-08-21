@@ -61,10 +61,27 @@ class IngestionApplicationService:
         if all_documents:
             indexed_ids = await self.vector_adapter.add_documents(all_documents)
             logger.info(f"Successfully indexed {len(indexed_ids)} chunks into Qdrant collection '{settings.QDRANT_COLLECTION_NAME}'.")
+
+            # Also build the in-memory BM25 index for sparse keyword search
+            from src.domain.models import DocumentChunk
+            from src.adapter.bm25_adapter import bm25_adapter
+
+            domain_chunks = [
+                DocumentChunk(
+                    chunk_id=f"{doc.metadata.get('source')}-chunk-{doc.metadata.get('chunk_index', idx)}",
+                    content=doc.page_content,
+                    metadata=doc.metadata
+                )
+                for idx, doc in enumerate(all_documents)
+            ]
+            bm25_adapter.index_documents(domain_chunks)
+            logger.info(f"BM25 index synchronized with {len(domain_chunks)} chunks.")
+
             return {
                 "status": "success",
                 "files_processed": len(md_files),
                 "chunks_indexed": len(all_documents),
+                "bm25_indexed": len(domain_chunks),
                 "collection_name": settings.QDRANT_COLLECTION_NAME
             }
         else:
@@ -74,3 +91,4 @@ class IngestionApplicationService:
                 "files_processed": 0,
                 "chunks_indexed": 0
             }
+
