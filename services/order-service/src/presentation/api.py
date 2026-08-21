@@ -151,3 +151,30 @@ async def order_status_stream(
             
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
+@router.put("/{order_id:int}/cancel", response_model=OrderDTO)
+async def cancel_order_endpoint(
+    order_id: int,
+    request: Request,
+    service: OrderApplicationService = Depends(get_order_service)
+):
+    """REST endpoint to cancel an order and initiate automatic payment reversal"""
+    try:
+        from src.application.commands import CancelOrderCommand
+        order = await service.get_order_by_id(order_id)
+        if not order:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Order #{order_id} not found"
+            )
+        await service.cancel_order(CancelOrderCommand(order_id=order_id, reason="Cancelled via Customer Support HITL"))
+        updated_order = await service.get_order_by_id(order_id)
+        return updated_order
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to cancel order: {str(e)}"
+        )
+
+

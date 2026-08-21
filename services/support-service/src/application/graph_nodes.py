@@ -62,10 +62,17 @@ async def router_node(state: SupportAgentState) -> Dict[str, Any]:
     ])
     has_order_keywords = "order_id" in entities or any(kw in msg_lower for kw in ["where is my", "track", "status of order", "my package", "my order", "my purchase", "recent orders"])
     has_product_keywords = "product_id" in entities or any(kw in msg_lower for kw in ["in stock", "price of", "product details"])
+    
+    # Check for direct state-changing mutation requests (Cancel order, Refund order)
+    has_mutation_keywords = any(kw in msg_lower for kw in [
+        "cancel order", "cancel my order", "cancel this order", "please cancel", "i want to cancel", "cancel it", "cancel #", "cancel order #"
+    ]) and ("order_id" in entities or "user_id" in entities)
 
     is_chitchat = any(msg_lower.strip().startswith(greeting) for greeting in ["hi", "hello", "hey", "thanks", "thank you", "good morning", "good evening", "who are you"])
 
-    if has_policy_keywords and (has_order_keywords or has_product_keywords):
+    if has_mutation_keywords:
+        intent = "order_action"
+    elif has_policy_keywords and (has_order_keywords or has_product_keywords):
         intent = "hybrid"
     elif has_order_keywords:
         intent = "order_inquiry"
@@ -82,6 +89,7 @@ async def router_node(state: SupportAgentState) -> Dict[str, Any]:
         "intent": intent,
         "extracted_entities": entities
     }
+
 
 # ---------------------------------------------------------------------------
 # Node 2: Two-Stage Hybrid Policy Retrieval & Re-ranking Node
@@ -418,5 +426,142 @@ async def clarification_node(state: SupportAgentState) -> Dict[str, Any]:
         "final_answer": clarification_text,
         "messages": [AIMessage(content=clarification_text)]
     }
+
+
+# ---------------------------------------------------------------------------
+# Node 9: HITL Prepare Action Node (Pauses before mutation via Breakpoint)
+# ---------------------------------------------------------------------------
+async def prepare_action_node(state: SupportAgentState) -> Dict[str, Any]:
+    """
+    Validates mutation eligibility (e.g. order cancellation) and sets up the pending approval payload.
+    Execution pauses right after this node at the 'execute_action' breakpoint.
+    """
+    from src.application.tools import order_client, product_client
+
+    entities = state.get("extracted_entities", {})
+    order_id = entities.get("order_id")
+
+    if not order_id and state.get("user_id"):
+        # Look up most recent user order
+        user_orders = await order_client.list_user_orders(int(state["user_id"]))
+        if user_orders:
+            order_id = user_orders[0].get("id")
+
+    if not order_id:
+        msg = "I'd be happy to help cancel your order, but I need an order number. Could you please provide your order ID (e.g. #1)?"
+        return {
+            "final_answer": msg,
+            "messages": [AIMessage(content=msg)],
+            "pending_action": None
+        }
+
+    logger.info(f"[prepare_action_node] Checking eligibility to cancel order #{order_id}")
+    order_data = await order_client.get_order(order_id)
+    
+    if not order_data:
+        msg = f"I couldn't locate order #{order_id} in our system. Please double-check your order confirmation email."
+        return {
+            "final_answer": msg,
+            "messages": [AIMessage(content=msg)],
+            "pending_action": None
+        }
+
+    order_status = str(order_data.get("status", "UNKNOWN")).upper()
+    total_price = order_data.get("total_price", 0.0)
+    product_id = order_data.get("product_id")
+    
+    product_name = "Item"
+    if product_id:
+        prod_data = await product_client.get_product(product_id)
+        if prod_data:
+            product_name = prod_data.get("name", "Item")
+
+    # In our e-commerce policy: only PENDING / CREATED orders can be cancelled directly
+    if order_status in ["PENDING", "CREATED", "PAID"]:
+        pending_payload = {
+            "action_type": "cancel_order",
+            "order_id": order_id,
+            "details": f"Order #{order_id} ({product_name}) - Total: ${total_price}",
+            "confirmation_prompt": f"Please confirm: Do you want to cancel Order #{order_id} ({product_name}) for ${total_price}? This action will permanently cancel the order and initiate an immediate refund."
+        }
+        msg = (
+            f"I have verified your order #{order_id} (**{product_name}** - **${total_price}**). "
+            f"It is currently **{order_status}** and eligible for cancellation.\n\n"
+            f"⚠️ **Confirmation Required**: Because order cancellation is permanent, please confirm below to proceed with the cancellation and refund."
+        )
+        return {
+            "final_answer": msg,
+            "messages": [AIMessage(content=msg)],
+            "pending_action": pending_payload
+        }
+    elif order_status in ["CANCELLED", "CANCELED"]:
+        msg = f"Order #{order_id} ({product_name}) has already been **CANCELLED**. Your payment has been reversed."
+        return {
+            "final_answer": msg,
+            "messages": [AIMessage(content=msg)],
+            "pending_action": None
+        }
+    else:
+        msg = (
+            f"Order #{order_id} ({product_name}) is currently **{order_status}**. "
+            f"Per our policy, orders that have already reached fulfillment or shipping cannot be cancelled directly in flight. "
+            f"You may refuse delivery upon arrival or return it within 30 days for a full refund."
+        )
+        return {
+            "final_answer": msg,
+            "messages": [AIMessage(content=msg)],
+            "pending_action": None
+        }
+
+
+# ---------------------------------------------------------------------------
+# Node 10: HITL Execute Action Node (Executes Mutation after Approval)
+# ---------------------------------------------------------------------------
+async def execute_action_node(state: SupportAgentState) -> Dict[str, Any]:
+    """
+    Executes the approved mutation against downstream microservices.
+    Only triggered when resumed with human approval.
+    """
+    from src.application.tools import order_client
+
+    pending_action = state.get("pending_action", {})
+    action_approved = state.get("action_approved")
+    order_id = pending_action.get("order_id")
+
+    logger.info(f"[execute_action_node] Executing action with approval status: {action_approved} for order #{order_id}")
+
+    if not action_approved:
+        msg = f"Order cancellation request for Order #{order_id} has been cancelled. Your order remains active and unchanged."
+        return {
+            "final_answer": msg,
+            "messages": [AIMessage(content=msg)],
+            "pending_action": None,
+            "action_result": {"status": "aborted", "order_id": order_id}
+        }
+
+    # Execute cancellation in order-service
+    cancel_res = await order_client.cancel_order(order_id)
+    
+    if cancel_res.get("success") is not False:
+        msg = (
+            f"✅ **Order #{order_id} has been successfully CANCELLED.**\n\n"
+            f"Per our store policy, an automatic payment reversal has been initiated. "
+            f"Funds will unlock on your original payment method in **1 to 3 business days**."
+        )
+        return {
+            "final_answer": msg,
+            "messages": [AIMessage(content=msg)],
+            "pending_action": None,
+            "action_result": {"status": "success", "order_id": order_id, "data": cancel_res}
+        }
+    else:
+        msg = f"⚠️ We encountered an issue while cancelling Order #{order_id}: {cancel_res.get('message', 'Downstream error')}. Please contact human support."
+        return {
+            "final_answer": msg,
+            "messages": [AIMessage(content=msg)],
+            "pending_action": None,
+            "action_result": {"status": "error", "message": cancel_res.get("message")}
+        }
+
 
 

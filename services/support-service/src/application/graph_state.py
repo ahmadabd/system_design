@@ -25,3 +25,9 @@ class SupportAgentState(TypedDict):
     answer_quality: Optional[str]             # "useful" vs "not_useful"
     correction_feedback: Optional[str]        # Directive passed back to generator if hallucination was detected
 
+    # Human-in-the-Loop (HITL) Action Control Fields
+    pending_action: Optional[Dict[str, Any]]  # {"action_type": "cancel_order", "order_id": 1, ...}
+    action_approved: Optional[bool]           # Set via human confirmation endpoint
+    action_result: Optional[Dict[str, Any]]    # Result returned after executing approved mutation
+
+

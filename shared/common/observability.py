@@ -52,9 +52,19 @@ def setup_observability(app: FastAPI, service_name: str) -> None:
     # 1. Initialize structured logging
     setup_logging()
     
-    logger = logging.getLogger("Observability")
-    
+    # Silence noisy OpenTelemetry internal exporter connection retry errors when otel-collector is offline
+    for noisy_otel_logger in [
+        "opentelemetry.exporter.otlp.proto.grpc.exporter",
+        "opentelemetry.exporter.otlp.proto.grpc.trace_exporter",
+        "opentelemetry.exporter.otlp.proto.grpc._log_exporter",
+        "opentelemetry.sdk.trace.export",
+        "opentelemetry.sdk._logs.export",
+        "opentelemetry"
+    ]:
+        logging.getLogger(noisy_otel_logger).setLevel(logging.CRITICAL)
+
     # 2. Setup OpenTelemetry Tracer and Logger
+    logger = logging.getLogger("Observability")
     endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317")
     logger.info(f"Connecting OTel Tracer & Logger to exporter endpoint: {endpoint}")
     
@@ -62,6 +72,8 @@ def setup_observability(app: FastAPI, service_name: str) -> None:
         "service.name": service_name,
         "environment": os.getenv("ENVIRONMENT", "production")
     })
+
+
     
     # Tracer initialization
     provider = TracerProvider(resource=resource)

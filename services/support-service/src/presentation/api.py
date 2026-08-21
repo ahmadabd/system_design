@@ -14,7 +14,16 @@ from src.adapter.llm_adapter import OpenRouterLLMAdapter
 from src.application.ingestion_service import IngestionApplicationService
 from src.application.rag_service import RAGApplicationService
 from src.application.graph_builder import support_workflow
-from src.presentation.schemas import ChatRequest, ChatResponse, IngestResponse, HealthResponse
+from src.presentation.schemas import (
+
+    ChatRequest,
+    ChatResponse,
+    IngestResponse,
+    HealthResponse,
+    ActionConfirmRequest,
+    PendingActionDTO
+)
+
 
 logger = logging.getLogger("SupportPresentation")
 
@@ -113,13 +122,17 @@ async def chat_support(
 
         answer = graph_result.get("final_answer") or "I apologize, but I could not process your request at this moment."
         sources = graph_result.get("sources", [])
-
-
+        pending_act = graph_result.get("pending_action")
         
+        chat_status = "pending_approval" if pending_act else "completed"
+        pending_dto = PendingActionDTO(**pending_act) if pending_act else None
+
         elapsed_ms = (time.perf_counter() - start_time) * 1000.0
 
         response_payload = ChatResponse(
+            status=chat_status,
             answer=answer,
+            pending_action=pending_dto,
             sources=sources,
             model=settings.OPENROUTER_MODEL,
             processing_time_ms=round(elapsed_ms, 2)
@@ -148,6 +161,42 @@ async def chat_support(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Chat generation error: {str(e)}"
         )
+
+@router.post("/actions/confirm", response_model=ChatResponse)
+async def confirm_action(request_data: ActionConfirmRequest, request: Request):
+    """
+    Human-in-the-Loop confirmation endpoint.
+    Resumes a frozen LangGraph execution at the 'execute_action' breakpoint.
+    """
+    start_time = time.perf_counter()
+    from shared.common.tenant import set_tenant, TenantContext
+    tenant_slug = request.headers.get("X-Tenant-ID") or "store_tech"
+    set_tenant(TenantContext(slug=tenant_slug))
+
+    try:
+        logger.info(f"Resuming HITL breakpoint for session_id={request_data.session_id}, approved={request_data.approved}")
+        resumed_result = await support_workflow.resume_action(
+            session_id=request_data.session_id,
+            approved=request_data.approved
+        )
+        answer = resumed_result.get("final_answer") or "Action processing complete."
+        elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+
+        return ChatResponse(
+            status="completed",
+            answer=answer,
+            pending_action=None,
+            sources=[],
+            model=settings.OPENROUTER_MODEL,
+            processing_time_ms=round(elapsed_ms, 2)
+        )
+    except Exception as e:
+        logger.error(f"Error resuming HITL action for session {request_data.session_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Action resume error: {str(e)}"
+        )
+
 
 @router.get("/conversations/{session_id}")
 async def get_conversation_history(session_id: str):

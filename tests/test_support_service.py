@@ -265,9 +265,140 @@ async def test_check_hallucination_node_grounded():
         "retry_count": 0,
         "hallucination_status": None,
         "answer_quality": None,
-        "correction_feedback": None
+        "correction_feedback": None,
+        "pending_action": None,
+        "action_approved": None,
+        "action_result": None
     }
     res = await check_hallucination_node(state)
     assert res["hallucination_status"] == "grounded"
     assert res["correction_feedback"] is None
+
+# ---------------------------------------------------------------------------
+# Track 4: Human-in-the-Loop (HITL) Breakpoint Tests
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_router_node_order_action_intent():
+    """Verify that direct cancellation requests map to order_action intent"""
+    state_cancel: SupportAgentState = {
+        "messages": [HumanMessage(content="Please cancel order #1042")],
+        "session_id": "test-hitl",
+        "user_id": None,
+        "intent": None,
+        "extracted_entities": {},
+        "retrieved_docs": [],
+        "tool_results": [],
+        "is_docs_relevant": None,
+        "final_answer": None,
+        "sources": [],
+        "retry_count": 0,
+        "hallucination_status": None,
+        "answer_quality": None,
+        "correction_feedback": None,
+        "pending_action": None,
+        "action_approved": None,
+        "action_result": None
+    }
+    res = await router_node(state_cancel)
+    assert res["intent"] == "order_action"
+    assert res["extracted_entities"].get("order_id") == 1042
+
+@pytest.mark.asyncio
+async def test_prepare_action_node_eligible_order():
+    """Verify that an eligible PENDING order triggers a pending_action approval payload"""
+    from src.application.graph_nodes import prepare_action_node
+
+    with patch("src.application.tools.order_client.get_order", new_callable=AsyncMock) as mock_get_order, \
+         patch("src.application.tools.product_client.get_product", new_callable=AsyncMock) as mock_get_prod:
+        
+        mock_get_order.return_value = {
+            "id": 1,
+            "status": "PENDING",
+            "total_price": 349.99,
+            "product_id": 1
+        }
+        mock_get_prod.return_value = {"name": "Sony Headphones"}
+
+        state: SupportAgentState = {
+            "messages": [HumanMessage(content="Cancel order 1")],
+            "session_id": "s1",
+            "user_id": None,
+            "intent": "order_action",
+            "extracted_entities": {"order_id": 1},
+            "retrieved_docs": [],
+            "tool_results": [],
+            "is_docs_relevant": None,
+            "final_answer": None,
+            "sources": [],
+            "retry_count": 0,
+            "hallucination_status": None,
+            "answer_quality": None,
+            "correction_feedback": None,
+            "pending_action": None,
+            "action_approved": None,
+            "action_result": None
+        }
+
+        res = await prepare_action_node(state)
+        assert res["pending_action"] is not None
+        assert res["pending_action"]["action_type"] == "cancel_order"
+        assert res["pending_action"]["order_id"] == 1
+        assert "Sony Headphones" in res["final_answer"]
+
+@pytest.mark.asyncio
+async def test_execute_action_node_approved_and_rejected():
+    """Verify execution of approved vs rejected mutations"""
+    from src.application.graph_nodes import execute_action_node
+
+    with patch("src.application.tools.order_client.cancel_order", new_callable=AsyncMock) as mock_cancel:
+        mock_cancel.return_value = {"success": True, "status": "CANCELLED"}
+
+        # 1. Approved Execution
+        state_approved: SupportAgentState = {
+            "messages": [],
+            "session_id": "s1",
+            "user_id": None,
+            "intent": "order_action",
+            "extracted_entities": {"order_id": 1},
+            "retrieved_docs": [],
+            "tool_results": [],
+            "is_docs_relevant": None,
+            "final_answer": None,
+            "sources": [],
+            "retry_count": 0,
+            "hallucination_status": None,
+            "answer_quality": None,
+            "correction_feedback": None,
+            "pending_action": {"action_type": "cancel_order", "order_id": 1},
+            "action_approved": True,
+            "action_result": None
+        }
+        res_approved = await execute_action_node(state_approved)
+        assert res_approved["action_result"]["status"] == "success"
+        assert "CANCELLED" in res_approved["final_answer"]
+
+        # 2. Rejected Execution
+        state_rejected: SupportAgentState = {
+            "messages": [],
+            "session_id": "s2",
+            "user_id": None,
+            "intent": "order_action",
+            "extracted_entities": {"order_id": 1},
+            "retrieved_docs": [],
+            "tool_results": [],
+            "is_docs_relevant": None,
+            "final_answer": None,
+            "sources": [],
+            "retry_count": 0,
+            "hallucination_status": None,
+            "answer_quality": None,
+            "correction_feedback": None,
+            "pending_action": {"action_type": "cancel_order", "order_id": 1},
+            "action_approved": False,
+            "action_result": None
+        }
+        res_rejected = await execute_action_node(state_rejected)
+        assert res_rejected["action_result"]["status"] == "aborted"
+        assert "remains active" in res_rejected["final_answer"]
+
 

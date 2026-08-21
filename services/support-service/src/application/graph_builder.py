@@ -9,8 +9,8 @@ from src.application.graph_nodes import (
     tools_node,
     generate_node,
     check_hallucination_node,
-    grade_answer_node,
-    clarification_node
+    prepare_action_node,
+    execute_action_node
 )
 
 logger = logging.getLogger("GraphBuilder")
@@ -20,7 +20,9 @@ def route_decision(state: SupportAgentState) -> str:
     intent = state.get("intent", "general")
     logger.info(f"[route_decision] Routing based on intent: {intent}")
     
-    if intent == "policy_faq":
+    if intent == "order_action":
+        return "prepare_action"
+    elif intent == "policy_faq":
         return "retrieve"
     elif intent in ["order_inquiry", "product_inquiry"]:
         return "tools"
@@ -43,6 +45,12 @@ def post_tools_decision(state: SupportAgentState) -> str:
         return "grade_docs"
     return "generate"
 
+def post_prepare_action_decision(state: SupportAgentState) -> str:
+    """If an action requires confirmation, proceed to execute_action breakpoint; otherwise end"""
+    if state.get("pending_action"):
+        return "execute_action"
+    return "end"
+
 def after_hallucination_decision(state: SupportAgentState) -> str:
     """Self-RAG loop: If hallucination detected and retry_count <= 2, regenerate with correction; else finish"""
     status_val = state.get("hallucination_status", "grounded")
@@ -54,7 +62,7 @@ def after_hallucination_decision(state: SupportAgentState) -> str:
     return "end"
 
 class SupportGraphWorkflow:
-    """Compiles and coordinates the LangGraph state machine with memory checkpointing and Self-RAG reflection"""
+    """Compiles and coordinates the LangGraph state machine with memory checkpointing, Self-RAG, and HITL breakpoints"""
     def __init__(self):
         self.checkpointer = MemorySaver()
         self.graph = self._build_graph()
@@ -62,13 +70,15 @@ class SupportGraphWorkflow:
     def _build_graph(self):
         workflow = StateGraph(SupportAgentState)
 
-        # 1. Register Core & Self-RAG Reflection Nodes
+        # 1. Register Core, Self-RAG, and HITL Action Nodes
         workflow.add_node("router", router_node)
         workflow.add_node("retrieve", retrieve_node)
         workflow.add_node("grade_docs", grade_documents_node)
         workflow.add_node("tools", tools_node)
         workflow.add_node("generate", generate_node)
         workflow.add_node("check_hallucination", check_hallucination_node)
+        workflow.add_node("prepare_action", prepare_action_node)
+        workflow.add_node("execute_action", execute_action_node)
 
         # 2. Define Entry Point
         workflow.set_entry_point("router")
@@ -78,6 +88,7 @@ class SupportGraphWorkflow:
             "router",
             route_decision,
             {
+                "prepare_action": "prepare_action",
                 "retrieve": "retrieve",
                 "tools": "tools",
                 "generate": "generate"
@@ -116,9 +127,22 @@ class SupportGraphWorkflow:
             }
         )
 
-        logger.info("Compiling Self-RAG LangGraph workflow with MemorySaver checkpointer...")
-        return workflow.compile(checkpointer=self.checkpointer)
+        # 5. Human-in-the-Loop Mutation Edges (Paused before execute_action)
+        workflow.add_conditional_edges(
+            "prepare_action",
+            post_prepare_action_decision,
+            {
+                "execute_action": "execute_action",
+                "end": END
+            }
+        )
+        workflow.add_edge("execute_action", END)
 
+        logger.info("Compiling Self-RAG & HITL LangGraph workflow with breakpoint on 'execute_action'...")
+        return workflow.compile(
+            checkpointer=self.checkpointer,
+            interrupt_before=["execute_action"]
+        )
 
     async def invoke(self, message: str, session_id: str = "default-session", user_id: str | None = None) -> dict:
         """Executes full multi-turn conversation step against the compiled graph"""
@@ -138,11 +162,25 @@ class SupportGraphWorkflow:
             "retry_count": 0,
             "hallucination_status": None,
             "answer_quality": None,
-            "correction_feedback": None
+            "correction_feedback": None,
+            "pending_action": None,
+            "action_approved": None,
+            "action_result": None
         }
 
         config = {"configurable": {"thread_id": session_id}}
         return await self.graph.ainvoke(initial_state, config=config)
+
+    async def resume_action(self, session_id: str, approved: bool) -> dict:
+        """Resumes a paused graph execution at the 'execute_action' breakpoint with human decision"""
+        config = {"configurable": {"thread_id": session_id}}
+        logger.info(f"Resuming HITL workflow for session_id={session_id} with approved={approved}")
+        
+        # 1. Update state with human approval decision
+        await self.graph.aupdate_state(config, {"action_approved": approved}, as_node="prepare_action")
+        
+        # 2. Resume graph execution from breakpoint to complete execute_action
+        return await self.graph.ainvoke(None, config=config)
 
     async def get_history(self, session_id: str):
         """Retrieves raw message history for a given session thread from checkpointer"""
@@ -154,3 +192,4 @@ class SupportGraphWorkflow:
 
 # Singleton workflow instance
 support_workflow = SupportGraphWorkflow()
+

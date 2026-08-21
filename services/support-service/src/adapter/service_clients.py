@@ -77,6 +77,30 @@ class OrderServiceClient:
             logger.error(f"Error listing orders for user {user_id}: {e}")
             return []
 
+    async def cancel_order(self, order_id: int) -> Dict[str, Any]:
+        """Executes order cancellation against order-service"""
+        url = f"{self.base_url}/{order_id}/cancel"
+        from shared.common.tenant import get_tenant_or_none
+        tenant = get_tenant_or_none()
+        headers = {"X-Tenant-ID": tenant.slug if tenant else "store_tech"}
+
+        async def _cancel():
+            logger.info(f"Sending cancellation request to order-service for order_id={order_id}")
+            response = await self.http_client.put(url, headers=headers)
+            if response.status_code == 200:
+                return response.json()
+            elif response.status_code == 404:
+                return {"success": False, "message": f"Order #{order_id} not found."}
+            else:
+                return {"success": False, "message": f"Cancellation failed with status {response.status_code}: {response.text}"}
+
+        try:
+            return await self.breaker.call(_cancel)
+        except Exception as e:
+            logger.error(f"Error executing cancel_order for order {order_id}: {e}")
+            return {"success": False, "message": str(e)}
+
+
 
 
 class ProductServiceClient:
