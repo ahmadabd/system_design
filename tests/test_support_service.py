@@ -225,3 +225,49 @@ async def test_ingestion_text_splitter():
     
     assert len(chunks) >= 1
     assert "30 days" in chunks[0].page_content
+
+# ---------------------------------------------------------------------------
+# Track 3: Self-RAG Reflection & Loop Control Tests
+# ---------------------------------------------------------------------------
+def test_self_rag_hallucination_loop_decisions():
+    """Verify that hallucination triggers self-correction loop when retry_count <= 2"""
+    from src.application.graph_builder import after_hallucination_decision
+
+    # 1. Grounded answer proceeds directly to end
+    state_grounded = {"hallucination_status": "grounded", "retry_count": 1}
+    assert after_hallucination_decision(state_grounded) == "end"
+
+    # 2. Hallucinated answer with retry <= 2 loops back to generate
+    state_hallucinated = {"hallucination_status": "not_grounded", "retry_count": 1}
+    assert after_hallucination_decision(state_hallucinated) == "generate"
+
+    # 3. Hallucinated answer that hit max retries stops looping and proceeds to end
+    state_max_retry = {"hallucination_status": "not_grounded", "retry_count": 3}
+    assert after_hallucination_decision(state_max_retry) == "end"
+
+
+@pytest.mark.asyncio
+async def test_check_hallucination_node_grounded():
+    """Verify that check_hallucination_node marks general queries as grounded automatically"""
+    from src.application.graph_nodes import check_hallucination_node
+
+    state: SupportAgentState = {
+        "messages": [HumanMessage(content="Hello!")],
+        "session_id": "test",
+        "user_id": None,
+        "intent": "general",
+        "extracted_entities": {},
+        "retrieved_docs": [],
+        "tool_results": [],
+        "is_docs_relevant": None,
+        "final_answer": "Hello! How can I help you today?",
+        "sources": [],
+        "retry_count": 0,
+        "hallucination_status": None,
+        "answer_quality": None,
+        "correction_feedback": None
+    }
+    res = await check_hallucination_node(state)
+    assert res["hallucination_status"] == "grounded"
+    assert res["correction_feedback"] is None
+

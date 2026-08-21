@@ -18,3 +18,10 @@ class SupportAgentState(TypedDict):
     is_docs_relevant: Optional[bool]          # True if retrieved docs are relevant to the user query
     final_answer: Optional[str]
     sources: List[Dict[str, Any]]
+    
+    # Self-RAG Reflection & Loop Control Fields
+    retry_count: int                          # Current regeneration loop count (max 2)
+    hallucination_status: Optional[str]       # "grounded" vs "not_grounded"
+    answer_quality: Optional[str]             # "useful" vs "not_useful"
+    correction_feedback: Optional[str]        # Directive passed back to generator if hallucination was detected
+

@@ -193,7 +193,7 @@ async def tools_node(state: SupportAgentState) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Node 5: Final Response Generator Node
+# Node 5: Response Generator Node (Self-Correction Aware)
 # ---------------------------------------------------------------------------
 SYSTEM_AGENT_PROMPT = """You are an expert, friendly, and proactive AI Customer Support Specialist for our modern e-commerce platform.
 
@@ -203,6 +203,7 @@ SYSTEM_AGENT_PROMPT = """You are an expert, friendly, and proactive AI Customer 
 
 2. **Official Store Policy Documents**:
 {policy_context}
+{correction_directive}
 
 ### INSTRUCTIONS:
 - If live order data is available, address the customer's specific order status, item, total, and tracking directly.
@@ -210,12 +211,19 @@ SYSTEM_AGENT_PROMPT = """You are an expert, friendly, and proactive AI Customer 
 - If the customer asks a hybrid question (e.g., "My order #12 is damaged, can I get a refund?"), synthesize the live order details with the exact policy steps (e.g. photos required within 48h for replacement/refund).
 - If an order was not found, politely advise the customer to verify their order number.
 - Maintain a warm, clear, and reassuring tone with bullet points and bold key terms.
+- Stick strictly to the facts provided. Never invent dates, policies, or financial promises.
+- CRITICAL: Output ONLY the direct final customer support answer. Do NOT output internal thinking processes, chain-of-thought scratchpads, or "Here's a thinking process".
 """
+
 
 async def generate_node(state: SupportAgentState) -> Dict[str, Any]:
     """
-    Synthesizes conversational history, tool execution results, and retrieved policy docs into a final answer.
+    Synthesizes conversational history, tool execution results, and retrieved policy docs into a response.
+    Supports Self-RAG corrective feedback loops.
     """
+    retry_count = state.get("retry_count", 0)
+    correction_feedback = state.get("correction_feedback")
+    
     # 1. Format Live Tool Context
     tool_results = state.get("tool_results", [])
     if tool_results:
@@ -235,22 +243,180 @@ async def generate_node(state: SupportAgentState) -> Dict[str, Any]:
     else:
         policy_context = "No specific policy document applied to this query."
 
+    # 3. Format Correction Directive if this is a retry turn
+    if correction_feedback:
+        correction_directive = f"\n\n### ⚠️ CRITICAL CORRECTION DIRECTIVE:\n{correction_feedback}"
+        logger.info(f"[generate_node] Retrying generation (Attempt {retry_count + 1}) with feedback: {correction_feedback}")
+    else:
+        correction_directive = ""
+
     system_prompt = SYSTEM_AGENT_PROMPT.format(
         tool_context=tool_context,
-        policy_context=policy_context
+        policy_context=policy_context,
+        correction_directive=correction_directive
     )
 
-    # 3. Assemble Full Conversation Messages
+    # 4. Assemble Full Conversation Messages
     messages_to_send = [SystemMessage(content=system_prompt)]
-    # Include all conversation history from state
     for msg in state["messages"]:
         messages_to_send.append(msg)
 
-    logger.info(f"[generate_node] Generating response with {len(messages_to_send)} total prompt messages.")
+    logger.info(f"[generate_node] Generating response (retry={retry_count}) with {len(messages_to_send)} prompt messages.")
     answer_text = await llm_adapter.invoke(messages_to_send)
 
     ai_message = AIMessage(content=str(answer_text))
     return {
         "messages": [ai_message],
-        "final_answer": str(answer_text)
+        "final_answer": str(answer_text),
+        "retry_count": retry_count + 1
     }
+
+
+# ---------------------------------------------------------------------------
+# Node 6: Self-RAG Hallucination Grader Node (LLM-as-a-Judge)
+# ---------------------------------------------------------------------------
+HALLUCINATION_GRADER_PROMPT = """You are a strict, objective AI Fact-Checking Grader.
+Your job is to assess whether the assistant's response is grounded in and supported by the provided facts.
+
+### PROVIDED FACTS (GROUND TRUTH):
+Tool Data: {tool_context}
+Policy Documents: {policy_context}
+
+### ASSISTANT RESPONSE:
+{answer}
+
+### CRITERIA:
+1. "grounded": Every single factual claim, SLA timeframe, return window, or order detail is directly supported by the provided facts, OR the response is polite conversational chitchat.
+2. "not_grounded": The response contains fabricated numbers, made-up policies, or claims that contradict the facts.
+
+Output ONLY a single word: either "grounded" or "not_grounded".
+"""
+
+async def check_hallucination_node(state: SupportAgentState) -> Dict[str, Any]:
+    """
+    Reflective node evaluating factual consistency of the generated response against context.
+    """
+    answer = state.get("final_answer", "")
+    docs = state.get("retrieved_docs", [])
+    tool_results = state.get("tool_results", [])
+    intent = state.get("intent", "general")
+
+    # If general greeting / chitchat, automatically considered grounded
+    if intent == "general" or (not docs and not tool_results):
+        logger.info("[check_hallucination_node] General query, marking grounded.")
+        return {"hallucination_status": "grounded", "correction_feedback": None}
+
+    tool_context = json.dumps(tool_results) if tool_results else "None"
+    policy_context = "\n".join([d.get("content", "") for d in docs]) if docs else "None"
+
+    prompt = HALLUCINATION_GRADER_PROMPT.format(
+        tool_context=tool_context,
+        policy_context=policy_context,
+        answer=answer
+    )
+
+    try:
+        verdict = await llm_adapter.invoke([SystemMessage(content=prompt)])
+        verdict_str = str(verdict).strip().lower()
+        
+        # Check verdict robustly
+        if "not_grounded" in verdict_str or "ungrounded" in verdict_str:
+            is_grounded = False
+            status_val = "not_grounded"
+            feedback = "Your previous answer contained ungrounded claims. Stick STRICTLY to the facts provided in the policy context and live tool data."
+        else:
+            is_grounded = True
+            status_val = "grounded"
+            feedback = None
+
+        logger.info(f"[check_hallucination_node] Hallucination grading verdict: '{status_val}' (raw: {verdict_str[:40]})")
+        return {
+            "hallucination_status": status_val,
+            "correction_feedback": feedback
+        }
+    except Exception as e:
+        logger.warning(f"[check_hallucination_node] Grader failed: {e}. Defaulting to grounded.")
+        return {"hallucination_status": "grounded", "correction_feedback": None}
+
+
+# ---------------------------------------------------------------------------
+# Node 7: Self-RAG Answer Quality & Usefulness Grader Node
+# ---------------------------------------------------------------------------
+ANSWER_GRADER_PROMPT = """You are a quality assurance evaluator for customer support.
+Assess whether the assistant's response directly and helpfully answers the user's question.
+
+### USER QUESTION:
+{question}
+
+### ASSISTANT RESPONSE:
+{answer}
+
+### CRITERIA:
+1. "useful": The response answers, clarifies, or resolves the user's question in a clear, friendly, and helpful way.
+2. "not_useful": The response is completely evasive, empty, or fails to address the question.
+
+Output ONLY a single word: either "useful" or "not_useful".
+"""
+
+async def grade_answer_node(state: SupportAgentState) -> Dict[str, Any]:
+    """
+    Reflective node evaluating whether the response adequately addresses the user's request.
+    """
+    answer = state.get("final_answer", "")
+    if not answer or len(answer.strip()) < 10:
+        logger.warning("[grade_answer_node] Empty or too short answer, marking not_useful.")
+        return {"answer_quality": "not_useful"}
+
+    messages = state.get("messages", [])
+    last_user_msg = ""
+    for msg in reversed(messages):
+        if isinstance(msg, HumanMessage) or (hasattr(msg, "type") and msg.type == "human"):
+            last_user_msg = msg.content
+            break
+
+    prompt = ANSWER_GRADER_PROMPT.format(
+        question=last_user_msg or "General query",
+        answer=answer
+    )
+
+    try:
+        verdict = await llm_adapter.invoke([SystemMessage(content=prompt)])
+        verdict_str = str(verdict).strip().lower()
+        
+        # Robust parsing: If model says not_useful explicitly at start
+        if verdict_str.startswith("not_useful") or "is not useful" in verdict_str:
+            status_val = "not_useful"
+        else:
+            status_val = "useful"
+        
+        logger.info(f"[grade_answer_node] Answer usefulness verdict: '{status_val}' (raw: {verdict_str[:40]})")
+        return {"answer_quality": status_val}
+    except Exception as e:
+        logger.warning(f"[grade_answer_node] Grader failed: {e}. Defaulting to useful.")
+        return {"answer_quality": "useful"}
+
+
+# ---------------------------------------------------------------------------
+# Node 8: Clarification Fallback Node
+# ---------------------------------------------------------------------------
+async def clarification_node(state: SupportAgentState) -> Dict[str, Any]:
+    """
+    Fallback node providing a polite clarification request if the answer was empty or completely off-topic.
+    """
+    existing_answer = state.get("final_answer", "")
+    # If there is already a substantive answer, preserve it
+    if existing_answer and len(existing_answer.strip()) > 30:
+        logger.info("[clarification_node] Preserving substantive generated answer.")
+        return {"final_answer": existing_answer}
+
+    logger.info("[clarification_node] Providing clarification fallback response.")
+    clarification_text = (
+        "I want to make sure I get you the exact information you need! "
+        "Could you please share a few more details, your order number, or rephrase your question?"
+    )
+    return {
+        "final_answer": clarification_text,
+        "messages": [AIMessage(content=clarification_text)]
+    }
+
+

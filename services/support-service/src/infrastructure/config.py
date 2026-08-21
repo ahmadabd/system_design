@@ -12,8 +12,9 @@ class SupportSettings(BaseSettings):
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
     OPENROUTER_MODEL: str = "nvidia/nemotron-3.5-lightning:free"
     LLM_TEMPERATURE: float = 0.2
-    LLM_MAX_TOKENS: int = 1024
-    LLM_REQUEST_TIMEOUT: float = 30.0
+    LLM_MAX_TOKENS: int = 2048
+    LLM_REQUEST_TIMEOUT: float = 45.0
+
 
     # Qdrant Vector Store Settings
     QDRANT_URL: str = os.getenv("QDRANT_URL", "http://qdrant:6333")

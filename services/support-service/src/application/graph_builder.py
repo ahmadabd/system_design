@@ -7,7 +7,10 @@ from src.application.graph_nodes import (
     retrieve_node,
     grade_documents_node,
     tools_node,
-    generate_node
+    generate_node,
+    check_hallucination_node,
+    grade_answer_node,
+    clarification_node
 )
 
 logger = logging.getLogger("GraphBuilder")
@@ -40,8 +43,18 @@ def post_tools_decision(state: SupportAgentState) -> str:
         return "grade_docs"
     return "generate"
 
+def after_hallucination_decision(state: SupportAgentState) -> str:
+    """Self-RAG loop: If hallucination detected and retry_count <= 2, regenerate with correction; else finish"""
+    status_val = state.get("hallucination_status", "grounded")
+    retry_count = state.get("retry_count", 0)
+    
+    if status_val == "not_grounded" and retry_count <= 2:
+        logger.warning(f"[after_hallucination_decision] Hallucination flagged. Triggering self-correction loop #{retry_count}...")
+        return "generate"
+    return "end"
+
 class SupportGraphWorkflow:
-    """Compiles and coordinates the LangGraph state machine with memory checkpointing"""
+    """Compiles and coordinates the LangGraph state machine with memory checkpointing and Self-RAG reflection"""
     def __init__(self):
         self.checkpointer = MemorySaver()
         self.graph = self._build_graph()
@@ -49,12 +62,13 @@ class SupportGraphWorkflow:
     def _build_graph(self):
         workflow = StateGraph(SupportAgentState)
 
-        # 1. Register Nodes
+        # 1. Register Core & Self-RAG Reflection Nodes
         workflow.add_node("router", router_node)
         workflow.add_node("retrieve", retrieve_node)
         workflow.add_node("grade_docs", grade_documents_node)
         workflow.add_node("tools", tools_node)
         workflow.add_node("generate", generate_node)
+        workflow.add_node("check_hallucination", check_hallucination_node)
 
         # 2. Define Entry Point
         workflow.set_entry_point("router")
@@ -89,10 +103,22 @@ class SupportGraphWorkflow:
         )
 
         workflow.add_edge("grade_docs", "generate")
-        workflow.add_edge("generate", END)
+        
+        # 4. Self-RAG Reflection Cycle (Generate -> Check Hallucination -> Loop or END)
+        workflow.add_edge("generate", "check_hallucination")
 
-        logger.info("Compiling LangGraph workflow with MemorySaver checkpointer...")
+        workflow.add_conditional_edges(
+            "check_hallucination",
+            after_hallucination_decision,
+            {
+                "generate": "generate",
+                "end": END
+            }
+        )
+
+        logger.info("Compiling Self-RAG LangGraph workflow with MemorySaver checkpointer...")
         return workflow.compile(checkpointer=self.checkpointer)
+
 
     async def invoke(self, message: str, session_id: str = "default-session", user_id: str | None = None) -> dict:
         """Executes full multi-turn conversation step against the compiled graph"""
@@ -108,20 +134,23 @@ class SupportGraphWorkflow:
             "tool_results": [],
             "is_docs_relevant": None,
             "final_answer": None,
-            "sources": []
+            "sources": [],
+            "retry_count": 0,
+            "hallucination_status": None,
+            "answer_quality": None,
+            "correction_feedback": None
         }
 
         config = {"configurable": {"thread_id": session_id}}
-        result = await self.graph.ainvoke(initial_state, config=config)
-        return result
+        return await self.graph.ainvoke(initial_state, config=config)
 
     async def get_history(self, session_id: str):
-        """Retrieves checkpointed message history for a given session"""
+        """Retrieves raw message history for a given session thread from checkpointer"""
         config = {"configurable": {"thread_id": session_id}}
-        state = await self.graph.aget_state(config)
-        if state and state.values and "messages" in state.values:
-            return state.values["messages"]
+        state_snapshot = await self.graph.aget_state(config)
+        if state_snapshot and "messages" in state_snapshot.values:
+            return state_snapshot.values["messages"]
         return []
 
-# Singleton workflow coordinator
+# Singleton workflow instance
 support_workflow = SupportGraphWorkflow()
