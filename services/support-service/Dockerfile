@@ -17,8 +17,12 @@ COPY shared/ /app/shared/
 # Copy knowledge base documents
 COPY services/support-service/knowledge_base/ /app/knowledge_base/
 
+# Copy benchmark evaluation suite
+COPY services/support-service/eval/ /app/eval/
+
 # Copy service-specific source code
 COPY services/support-service/src/ /app/src/
+
 
 # Ensure python can locate shared packages
 ENV PYTHONPATH=/app

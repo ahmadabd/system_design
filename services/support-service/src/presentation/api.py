@@ -241,3 +241,21 @@ async def chat_support_stream(request_data: ChatRequest):
             yield f"data: {{\"error\": \"{str(e)}\"}}\n\n"
 
     return StreamingResponse(token_generator(), media_type="text/event-stream")
+
+@router.get("/eval/benchmark")
+async def get_benchmark_report():
+    """Returns the latest automated RAG Triad benchmark evaluation summary"""
+    import os
+    import json
+    report_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "eval", "eval_report.json")
+    if os.path.exists(report_path):
+        try:
+            with open(report_path, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to read report: {e}")
+    return {
+        "status": "pending_execution",
+        "message": "No benchmark report found. Run python eval/run_evaluation.py to generate evaluation metrics."
+    }
+

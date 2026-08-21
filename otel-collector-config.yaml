@@ -1,3 +1,7 @@
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
 receivers:
   otlp:
     protocols:
@@ -7,43 +11,68 @@ receivers:
         endpoint: 0.0.0.0:4318
 
 processors:
+  # Limit memory usage to prevent OOM under high load
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  # Batch spans/logs before exporting for efficiency
   batch:
+    send_batch_size: 512
+    timeout: 2s
+
+  # Promote service.name → service_name resource label (needed by both Jaeger and Loki)
   resource:
     attributes:
       - key: service_name
         from_attribute: service.name
-        action: insert
-      - key: instance_id
-        from_attribute: instance.id
+        action: upsert
+      - key: environment
+        from_attribute: environment
         action: insert
 
 exporters:
+  # Send traces to Jaeger via OTLP HTTP
   otlp_http/jaeger:
     endpoint: "http://jaeger:4318"
     tls:
       insecure: true
-  
+
+  # Expose metrics for Prometheus scraping
   prometheus:
     endpoint: "0.0.0.0:8889"
     send_timestamps: true
     metric_expiration: 180s
-  
+
+  # Push logs to Loki via OTLP HTTP (Loki >=2.9 native OTLP endpoint)
   otlp_http/loki:
     endpoint: "http://loki:3100/otlp"
     tls:
       insecure: true
 
 service:
+  extensions: [health_check]
+  telemetry:
+    logs:
+      level: warn   # Suppress noisy collector internal logs
+
   pipelines:
+    # Distributed traces → Jaeger (all services: user, product, order, payment, support, etc.)
     traces:
       receivers: [otlp]
-      processors: [batch]
+      processors: [memory_limiter, resource, batch]
       exporters: [otlp_http/jaeger]
+
+    # Prometheus metrics → Prometheus scrape endpoint
     metrics:
       receivers: [otlp]
-      processors: [batch]
+      processors: [memory_limiter, batch]
       exporters: [prometheus]
+
+    # Structured logs → Loki (all services, with service_name label for filtering)
     logs:
       receivers: [otlp]
-      processors: [resource, batch]
+      processors: [memory_limiter, resource, batch]
       exporters: [otlp_http/loki]
+

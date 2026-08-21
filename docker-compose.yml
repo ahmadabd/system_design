@@ -115,6 +115,7 @@ services:
       context: .
       dockerfile: services/user-service/Dockerfile
     container_name: user-service
+    restart: unless-stopped
     ports:
       - "${USER_SERVICE_PORT:-8001}:${USER_SERVICE_PORT:-8001}"
     environment:
@@ -136,6 +137,7 @@ services:
       context: .
       dockerfile: services/product-service/Dockerfile
     container_name: product-service
+    restart: unless-stopped
     ports:
       - "${PRODUCT_SERVICE_PORT:-8002}:${PRODUCT_SERVICE_PORT:-8002}"
     environment:
@@ -157,6 +159,7 @@ services:
       context: .
       dockerfile: services/order-service/Dockerfile
     container_name: order-service
+    restart: unless-stopped
     ports:
       - "${ORDER_SERVICE_PORT:-8003}:${ORDER_SERVICE_PORT:-8003}"
     environment:
@@ -178,6 +181,7 @@ services:
       context: .
       dockerfile: services/payment-service/Dockerfile
     container_name: payment-service
+    restart: unless-stopped
     ports:
       - "${PAYMENT_SERVICE_PORT:-8004}:${PAYMENT_SERVICE_PORT:-8004}"
     environment:
@@ -200,6 +204,7 @@ services:
       context: .
       dockerfile: services/reporting-service/Dockerfile
     container_name: reporting-service
+    restart: unless-stopped
     ports:
       - "${REPORTING_SERVICE_PORT:-8005}:${REPORTING_SERVICE_PORT:-8005}"
     environment:
@@ -235,6 +240,7 @@ services:
       context: .
       dockerfile: services/webhook-service/Dockerfile
     container_name: webhook-service
+    restart: unless-stopped
     ports:
       - "${WEBHOOK_SERVICE_PORT:-8006}:${WEBHOOK_SERVICE_PORT:-8006}"
     environment:
@@ -267,6 +273,7 @@ services:
       context: .
       dockerfile: services/support-service/Dockerfile
     container_name: support-service
+    restart: unless-stopped
     ports:
       - "${SUPPORT_SERVICE_PORT:-8007}:${SUPPORT_SERVICE_PORT:-8007}"
     environment:
@@ -298,6 +305,7 @@ services:
       - ./dynamic.yml:/etc/traefik/dynamic.yml:ro
     ports:
       - "80:80"
+
     networks:
       ecommerce-network:
           ipv4_address: 172.20.0.250

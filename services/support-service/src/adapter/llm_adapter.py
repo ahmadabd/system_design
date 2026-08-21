@@ -28,24 +28,40 @@ def clean_llm_response(text: str) -> str:
     return cleaned
 
 class OpenRouterLLMAdapter:
-    """Adapter for invoking OpenRouter Nvidia LLM with resilience and streaming support"""
+    """Adapter for invoking OpenRouter Nvidia LLM with resilience, streaming support, and transient retries"""
     def __init__(self, manager: LLMManager):
         self.manager = manager
         self.breaker = AsyncCircuitBreaker(
             name="openrouter-breaker",
-            failure_threshold=3,
+            failure_threshold=4,
             recovery_timeout=15.0
         )
 
     async def invoke(self, messages: List[BaseMessage]) -> str:
-        """Invokes the OpenRouter LLM under circuit breaker protection and sanitizes scratchpad thinking"""
+        """Invokes the OpenRouter LLM under circuit breaker protection, auto-retries transient 524/504 errors, and sanitizes scratchpad thinking"""
         async def _invoke():
-            llm = self.manager.get_llm()
-            response = await llm.ainvoke(messages)
-            raw_content = str(response.content) if response and hasattr(response, "content") else ""
-            return clean_llm_response(raw_content)
+            import asyncio
+            max_attempts = 3
+            backoff = 2.0
+
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    llm = self.manager.get_llm()
+                    response = await llm.ainvoke(messages)
+                    raw_content = str(response.content) if response and hasattr(response, "content") else ""
+                    return clean_llm_response(raw_content)
+                except Exception as err:
+                    err_msg = str(err)
+                    is_transient = any(code in err_msg for code in ["524", "504", "502", "503", "429", "timeout", "timed out", "RateLimitError"])
+                    if is_transient and attempt < max_attempts:
+                        logger.warning(f"OpenRouter transient error on attempt {attempt}/{max_attempts}: {err}. Retrying in {backoff:.1f}s...")
+                        await asyncio.sleep(backoff)
+                        backoff *= 2.0
+                    else:
+                        raise err
 
         return await self.breaker.call(_invoke)
+
 
 
     async def stream(self, messages: List[BaseMessage]) -> AsyncIterator[str]:

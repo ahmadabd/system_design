@@ -142,11 +142,20 @@ class KafkaManager:
             
             key = str(event_data.get("store_id") or event_data.get("order_id") or event_data.get("user_id") or "").encode("utf-8") or None
             
-            # Start an active PRODUCER span for visual timeline tracking in Jaeger
+            # If trace headers were preserved in the outbox payload metadata, restore parent context
             from opentelemetry import trace
+            from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+            
+            parent_ctx = None
+            if isinstance(event_data, dict):
+                saved_trace_headers = event_data.get("metadata", {}).get("trace_headers")
+                if saved_trace_headers and isinstance(saved_trace_headers, dict):
+                    parent_ctx = TraceContextTextMapPropagator().extract(carrier=saved_trace_headers)
+            
             tracer = trace.get_tracer("kafka-producer")
             with tracer.start_as_current_span(
                 name=f"kafka.send {topic}",
+                context=parent_ctx,
                 kind=trace.SpanKind.PRODUCER
             ) as span:
                 span.set_attribute("messaging.system", "kafka")
@@ -158,9 +167,14 @@ class KafkaManager:
                 
                 # Inject the active PRODUCER span context into the headers
                 headers_dict = {}
-                from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
                 TraceContextTextMapPropagator().inject(headers_dict)
                 
+                # Also ensure updated trace headers are preserved in payload metadata for consumers
+                if isinstance(event_data, dict):
+                    if "metadata" not in event_data:
+                        event_data["metadata"] = {}
+                    event_data["metadata"]["trace_headers"] = headers_dict
+
                 # Convert to list of tuples format: (str, bytes) for Kafka headers
                 kafka_headers = [
                     (k, v.encode("utf-8")) 
@@ -171,6 +185,7 @@ class KafkaManager:
                 if messaging_kafka_messages_total:
                     messaging_kafka_messages_total.labels(topic=topic, operation="send").inc()
                 logger.info(f"Published message to Kafka topic '{topic}' with key '{key.decode() if key else 'None'}' on partition {partition}")
+
 
         await self.kafka_breaker.call(_do_publish)
 

@@ -1,0 +1,134 @@
+[
+  {
+    "id": "tc-01",
+    "category": "policy_faq",
+    "question": "What is the return window for clothing vs electronics, and who pays shipping?",
+    "user_id": null,
+    "expected_sources": [
+      "return_refund_policy.md"
+    ],
+    "ground_truth_key_points": [
+      "30 calendar days return window from delivery",
+      "$4.99 return shipping deduction for change of mind or sizing",
+      "Free return shipping for defective or damaged items",
+      "10% restocking fee for opened large electronics"
+    ]
+  },
+  {
+    "id": "tc-02",
+    "category": "policy_faq",
+    "question": "What is the delivery SLA for standard vs express shipping, and what is the free shipping threshold?",
+    "user_id": null,
+    "expected_sources": [
+      "shipping_delivery_sla.md"
+    ],
+    "ground_truth_key_points": [
+      "Standard shipping is 5 to 7 business days",
+      "Express shipping is 1 to 3 business days",
+      "Free standard shipping on orders over $50"
+    ]
+  },
+  {
+    "id": "tc-03",
+    "category": "policy_faq",
+    "question": "My package arrived damaged. What is the time limit to file a claim and what do I need to provide?",
+    "user_id": null,
+    "expected_sources": [
+      "damaged_missing_items.md"
+    ],
+    "ground_truth_key_points": [
+      "Must report within 48 hours of delivery",
+      "Must provide photos of damaged item, outer box, and shipping label",
+      "Eligible for free replacement, 30% partial credit, or full refund"
+    ]
+  },
+  {
+    "id": "tc-04",
+    "category": "policy_faq",
+    "question": "Do you offer Cash on Delivery (COD) and what is the maximum order limit for COD?",
+    "user_id": null,
+    "expected_sources": [
+      "payment_methods_billing.md"
+    ],
+    "ground_truth_key_points": [
+      "Cash on Delivery is available in eligible regions",
+      "Maximum order limit for COD is $250",
+      "Requires exact cash payment upon delivery"
+    ]
+  },
+  {
+    "id": "tc-05",
+    "category": "order_inquiry",
+    "question": "Where is my order #1 and what items are in it?",
+    "user_id": "1",
+    "expected_sources": [],
+    "ground_truth_key_points": [
+      "Order #1 details retrieved from live database",
+      "Status is CANCELLED (or live state)",
+      "Product is Gaming Laptop priced at $1299.99"
+    ]
+  },
+  {
+    "id": "tc-06",
+    "category": "hybrid",
+    "question": "My order #1 arrived damaged, can I get a replacement sent?",
+    "user_id": "1",
+    "expected_sources": [
+      "damaged_missing_items.md"
+    ],
+    "ground_truth_key_points": [
+      "Identifies live Order #1 status",
+      "Explains 48-hour claim protocol for delivered items",
+      "Explains cancellation refund terms if order was cancelled"
+    ]
+  },
+  {
+    "id": "tc-07",
+    "category": "order_action",
+    "question": "Please cancel my order #127",
+    "user_id": "1",
+    "expected_sources": [],
+    "ground_truth_key_points": [
+      "Identifies order cancellation mutation intent",
+      "Validates order eligibility",
+      "Requests human confirmation before executing cancellation"
+    ]
+  },
+  {
+    "id": "tc-08",
+    "category": "general",
+    "question": "Hi there! Who are you and how can you help me today?",
+    "user_id": null,
+    "expected_sources": [],
+    "ground_truth_key_points": [
+      "Polite greeting identifying as the AI Support Assistant",
+      "Explains capabilities: policy questions, order tracking, returns"
+    ]
+  },
+  {
+    "id": "tc-09",
+    "category": "out_of_scope",
+    "question": "Can you write a Python script to scrape stock prices from Yahoo Finance?",
+    "user_id": null,
+    "expected_sources": [],
+    "ground_truth_key_points": [
+      "Politely declines out-of-scope technical programming request",
+      "Redirects customer back to store shopping and order inquiries"
+    ]
+  },
+  {
+    "id": "tc-10",
+    "category": "policy_faq",
+    "question": "What is the warranty coverage for electronics and what is excluded?",
+    "user_id": null,
+    "expected_sources": [
+      "warranty_service_terms.md",
+      "return_refund_policy.md"
+    ],
+    "ground_truth_key_points": [
+      "Standard 1-year manufacturer warranty for electronics",
+      "Covers manufacturing defects and internal hardware failures",
+      "Excludes accidental drops, water damage, and unauthorized repairs"
+    ]
+  }
+]

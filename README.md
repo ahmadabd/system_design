@@ -26,17 +26,20 @@ graph TD
         PayServ["payment-service:8004"]
         RepServ["reporting-service:8005"]
         WebhookServ["webhook-service:8006"]
+        SupportServ["support-service:8007 (Agentic RAG)"]
     end
 
-    subgraph DataCaching ["Data & Caching Tier"]
+    subgraph DataCaching ["Data, Vector & Caching Tier"]
         UserDB[("user_db: PostgreSQL")]
         ProdDB[("product_db: PostgreSQL")]
         OrdDB[("order_db: PostgreSQL")]
         PayDB[("payment_db: PostgreSQL")]
         RepDB[("reporting_db: PostgreSQL")]
         WebhookDB[("webhook_db: PostgreSQL")]
+        QdrantDB[("qdrant: Vector Database")]
         Redis[("redis: Redis 7")]
     end
+
 
     subgraph EventBroker ["Asynchronous Event Broker"]
         Kafka[("Apache Kafka KRaft Broker")]
@@ -66,14 +69,17 @@ graph TD
     Router -->|"/payments/*"| PayServ
     Router -->|"/reporting/*"| RepServ
     Router -->|"/webhooks/*"| WebhookServ
+    Router -->|"/support/*"| SupportServ
 
-    %% Database Connections
+    %% Database & Vector Connections
     UserServ -->|"db_breaker"| UserDB
     ProdServ -->|"db_breaker"| ProdDB
     OrdServ -->|"db_breaker"| OrdDB
     PayServ -->|"db_breaker"| PayDB
     RepServ -->|"db_breaker"| RepDB
     WebhookServ -->|"db_breaker"| WebhookDB
+    SupportServ -->|"qdrant_breaker"| QdrantDB
+
 
     %% Idempotency Cache Connections
     UserServ -->|"Idempotency Cache"| Redis
@@ -1167,5 +1173,139 @@ To explore core traffic shaping and resilience algorithms in pure, stand-alone P
 
 ---
 
-> [!NOTE]
-> All traces are automatically populated with OpenTelemetry `trace_id` and `span_id` contexts, allowing developers to view the full cascading call graph in **Jaeger** (`http://localhost:16686`) and trace structured logs in **Loki / Grafana** (`http://localhost:3000`).
+## 🤖 10. AI Customer Support Service (Agentic RAG & LangGraph)
+
+The **Support AI Bounded Context** (`support-service:8007`) provides an enterprise-grade agentic customer assistant designed for multi-tenant e-commerce platforms.
+
+### A. Key Architectural Capabilities
+
+1. **Two-Stage Hybrid Search & Reciprocal Rank Fusion (RRF)**:
+   - Combines **Dense Semantic Embeddings** via Qdrant (`BAAI/bge-small-en-v1.5`) and **Sparse Keyword Search** via in-memory `BM25Okapi`.
+   - Merges candidate rankings using standard Reciprocal Rank Fusion:
+     $$RRF(d) = \sum_{m \in M} \frac{1}{60 + \text{rank}_m(d)}$$
+2. **FlashRank Cross-Encoder Re-Ranking Pipeline**:
+   - Scores Top-15 fused candidate chunks using a local CPU-optimized Cross-Encoder model (`ms-marco-TinyBERT-L-2-v2`).
+   - Re-ranks for true semantic relevance with $< 20\text{ms}$ latency and $\$0$ marginal inference cost.
+3. **Self-RAG (Hallucination Checking & Reflection Loops)**:
+   - An independent **LLM-as-a-Judge Fact-Checker** evaluates draft answers against retrieved policies and live database results before delivery.
+   - Automatically loops back to generation with corrective directives if ungrounded claims are detected (bounded by `max_retries=2`).
+4. **Human-in-the-Loop (HITL) with LangGraph Breakpoints**:
+   - High-risk state mutations (e.g. **Order Cancellations** and **Refund Requests**) trigger a LangGraph breakpoint (`interrupt_before=["execute_action"]`).
+   - The graph state is frozen and persisted in the memory/Redis checkpointer, returning `status: "pending_approval"`.
+   - Execution resumes and completes the database mutation only when explicit approval is submitted via `POST /support/actions/confirm`.
+5. **Automated RAG Triad Evaluation Suite (Ragas / LLM-as-a-Judge)**:
+   - Automated benchmark runner (`eval/run_evaluation.py`) scoring the 3 RAG Triad dimensions on a curated golden dataset:
+     - **Context Relevance ($S_{context}$)**: Retriever precision (Target $\ge 0.85$).
+     - **Faithfulness ($S_{faithful}$)**: Hallucination rate (Target $\ge 0.90$).
+     - **Answer Relevance ($S_{answer}$)**: User intent satisfaction (Target $\ge 0.85$).
+
+---
+
+### B. Testing the AI Support Service
+
+#### 1. Policy FAQ Query (Two-Stage Hybrid Search & Re-Ranking)
+```bash
+curl -X POST http://localhost/support/chat \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-ID: store_tech" \
+  -d '{
+    "session_id": "policy-test-01",
+    "message": "What is the return window for clothing vs electronics, and who pays shipping?"
+  }'
+```
+
+---
+
+#### 2. Hybrid Policy + Live Order Query (Self-RAG Reflection)
+```bash
+curl -X POST http://localhost/support/chat \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-ID: store_tech" \
+  -d '{
+    "user_id": "1",
+    "session_id": "hybrid-test-01",
+    "message": "My order #1 arrived damaged, can I get a replacement sent?"
+  }'
+```
+
+---
+
+#### 3. Human-in-the-Loop Order Cancellation (Step 1: Pauses at Breakpoint)
+```bash
+curl -X POST http://localhost/support/chat \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-ID: store_tech" \
+  -d '{
+    "user_id": "1",
+    "session_id": "hitl-test-01",
+    "message": "Please cancel my order #1"
+  }'
+```
+*Returns `status: "pending_approval"` with confirmation details. No database mutation has occurred yet.*
+
+---
+
+#### 4. Human Approval Confirmation (Step 2: Resumes & Cancels in DB)
+```bash
+curl -X POST http://localhost/support/actions/confirm \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-ID: store_tech" \
+  -d '{
+    "session_id": "hitl-test-01",
+    "approved": true
+  }'
+```
+*Resumes the frozen thread, calls `order-service` to cancel the order, and confirms the cancellation.*
+
+---
+
+#### 5. Run the Automated RAG Triad Benchmark Suite
+```bash
+# Run benchmark inside the container
+docker compose exec support-service python eval/run_evaluation.py
+
+# Inspect benchmark report via REST API
+curl http://localhost/support/eval/benchmark
+```
+
+---
+
+## 📈 11. Distributed Observability Stack (Jaeger, Loki, Prometheus & Grafana)
+
+The platform includes a production-grade distributed telemetry stack defined in `docker-compose.observability.yml`:
+
+| Telemetry Pillar | Tool / Port | Purpose in Platform |
+| :--- | :--- | :--- |
+| **Distributed Tracing** | **Jaeger** (`http://localhost:16686`) | Visual waterfall tracking across Traefik $\rightarrow$ Microservices $\rightarrow$ DB queries $\rightarrow$ Kafka Sagas $\rightarrow$ LangGraph AI nodes. |
+| **Structured Logging** | **Loki & Grafana** (`http://localhost:3000`) | Aggregates structured JSON logs from all 7 services with correlated `trace_id`, `span_id`, and `service_name` stream labels. |
+| **Metrics & Telemetry** | **Prometheus** (`http://localhost:9090`) | Scrapes `/metrics` endpoints for latency histograms, request counters, outbox backlog gauges, and DLQ counts. |
+| **Telemetry Pipeline** | **OpenTelemetry Collector** (`:4317` / `:4318`) | Ingests OTLP telemetry batches, enriches spans with resource metadata, and routes to Jaeger, Loki, and Prometheus. |
+
+### A. How to Start the Observability Stack
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+```
+
+### B. Inspecting Distributed Traces in Jaeger (`http://localhost:16686`)
+1. Open **[http://localhost:16686](http://localhost:16686)**.
+2. Select any service (`order-service`, `support-service`, `product-service`, `user-service`).
+3. Click **Find Traces** to view the cascading execution graph:
+   - **Order Saga Waterfall**: Shows `POST /orders` $\rightarrow$ User verification $\rightarrow$ Product verification $\rightarrow$ DB Outbox write $\rightarrow$ Kafka `order.created` send $\rightarrow$ Product consumer reservation $\rightarrow$ Payment consumer execution.
+   - **AI Support Agent Waterfall**: Shows `POST /support/chat` $\rightarrow$ `langgraph.router` $\rightarrow$ `langgraph.retrieve` (Qdrant + BM25 + FlashRank) $\rightarrow$ `langgraph.tools` (HTTP calls to `order-service` / `product-service`) $\rightarrow$ `langgraph.generate` $\rightarrow$ `langgraph.check_hallucination`.
+
+### C. Querying Multi-Service Logs in Loki / Grafana (`http://localhost:3000`)
+1. Open Grafana: **[http://localhost:3000](http://localhost:3000)** (Navigate to **Explore** $\rightarrow$ select **Loki**).
+2. Query logs across all services:
+   ```logql
+   # Stream logs from all 7 microservices in real-time
+   {service_name=~".+"}
+
+   # Filter logs for a specific service
+   {service_name="order-service"}
+   {service_name="support-service"}
+
+   # Find errors across the entire fleet
+   {service_name=~".+"} |= "ERROR"
+   ```
+3. Click on any log line's **`trace_id`** badge to jump straight from Loki logs into the exact Jaeger trace!
