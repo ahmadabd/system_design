@@ -34,7 +34,7 @@ processors:
 
 exporters:
   # Send traces to Jaeger via OTLP HTTP
-  otlp_http/jaeger:
+  otlphttp/jaeger:
     endpoint: "http://jaeger:4318"
     tls:
       insecure: true
@@ -46,7 +46,7 @@ exporters:
     metric_expiration: 180s
 
   # Push logs to Loki via OTLP HTTP (Loki >=2.9 native OTLP endpoint)
-  otlp_http/loki:
+  otlphttp/loki:
     endpoint: "http://loki:3100/otlp"
     tls:
       insecure: true
@@ -62,7 +62,7 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, resource, batch]
-      exporters: [otlp_http/jaeger]
+      exporters: [otlphttp/jaeger]
 
     # Prometheus metrics → Prometheus scrape endpoint
     metrics:
@@ -74,5 +74,5 @@ service:
     logs:
       receivers: [otlp]
       processors: [memory_limiter, resource, batch]
-      exporters: [otlp_http/loki]
+      exporters: [otlphttp/loki]
 

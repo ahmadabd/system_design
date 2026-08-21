@@ -16,3 +16,4 @@ opentelemetry-instrumentation-sqlalchemy>=0.43b0
 opentelemetry-instrumentation-redis>=0.43b0
 alembic>=1.13.1
 psycopg2-binary>=2.9
+opentelemetry-instrumentation-httpx>=0.43b0

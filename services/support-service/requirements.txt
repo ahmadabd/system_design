@@ -22,3 +22,4 @@ opentelemetry-instrumentation-redis>=0.43b0
 rank-bm25>=0.2.2
 flashrank>=0.2.9
 
+opentelemetry-instrumentation-httpx>=0.43b0

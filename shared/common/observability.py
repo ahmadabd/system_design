@@ -107,6 +107,14 @@ def setup_observability(app: FastAPI, service_name: str) -> None:
             logger.info("OpenTelemetry Redis instrumentation successful.")
         except Exception as redis_trace_err:
             logger.warning(f"Could not instrument Redis: {redis_trace_err}")
+
+        # Instrument httpx globally to capture inter-service HTTP requests
+        try:
+            from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+            HTTPXClientInstrumentor().instrument()
+            logger.info("OpenTelemetry HTTPX instrumentation successful.")
+        except Exception as httpx_trace_err:
+            logger.warning(f"Could not instrument HTTPX: {httpx_trace_err}")
     except Exception as e:
         logger.error(f"Failed to initialize OpenTelemetry Tracer: {e}", exc_info=True)
 
