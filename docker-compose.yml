@@ -297,6 +297,36 @@ services:
     networks:
       - ecommerce-network
 
+  mcp-service:
+    build:
+      context: .
+      dockerfile: services/mcp-server/Dockerfile
+    container_name: mcp-service
+    restart: unless-stopped
+    ports:
+      - "${MCP_SERVICE_PORT:-8008}:${MCP_SERVICE_PORT:-8008}"
+    environment:
+      - PORT=${MCP_SERVICE_PORT:-8008}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - SERVICE_NAME=mcp-service
+      - API_GATEWAY_URL=http://traefik-master:80
+      - USER_SERVICE_URL=http://user-service:8001
+      - PRODUCT_SERVICE_URL=http://product-service:8002
+      - ORDER_SERVICE_URL=http://order-service:8003
+      - PAYMENT_SERVICE_URL=http://payment-service:8004
+      - REPORTING_SERVICE_URL=http://reporting-service:8005
+      - DEFAULT_TENANT=store_tech
+      - TRANSPORT_MODE=sse
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-sys_design_secure_cache_pass_2026}@redis:${REDIS_PORT:-6379}
+    depends_on:
+      - redis
+      - user-service
+      - product-service
+      - order-service
+    networks:
+      - ecommerce-network
+
   traefik-master:
     image: traefik:v3.7
     container_name: traefik-master
@@ -317,6 +347,7 @@ services:
       - reporting-service
       - webhook-service
       - support-service
+      - mcp-service
 
   traefik-backup:
     image: traefik:v3.7
@@ -335,6 +366,7 @@ services:
       - reporting-service
       - webhook-service
       - support-service
+      - mcp-service
 
   keepalived-master:
     image: osixia/keepalived:latest

@@ -70,6 +70,16 @@ http:
         - "strip-support"
       service: support-service
 
+    mcp-router:
+      rule: "PathPrefix(`/mcp`)"
+      entryPoints:
+        - web
+      middlewares:
+        - "rate-limit"
+        - "load-shedding"
+        - "strip-mcp"
+      service: mcp-service
+
 
   middlewares:
     load-shedding:
@@ -121,6 +131,11 @@ http:
       stripPrefix:
         prefixes:
           - "/support"
+
+    strip-mcp:
+      stripPrefix:
+        prefixes:
+          - "/mcp"
 
 
   services:
@@ -186,3 +201,8 @@ http:
           timeout: 1s
         servers:
           - url: "http://support-service:8007"
+
+    mcp-service:
+      loadBalancer:
+        servers:
+          - url: "http://mcp-service:8008"

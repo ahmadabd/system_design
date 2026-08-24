@@ -86,3 +86,21 @@ groups:
           summary: "AI Circuit Breaker OPEN: {{ $labels.name }}"
           description: "Circuit breaker {{ $labels.name }} has tripped to OPEN due to consecutive failures. AI Support will fast-fail or degrade gracefully."
 
+      - alert: MCPHighDegradedRate
+        expr: sum(rate(mcp_circuit_breaker_trips_total[2m])) > 0.5
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High MCP Circuit Breaker Degradation Rate on {{ $labels.instance }}"
+          description: "AI Agent tool calls are experiencing circuit breaker trips and degraded responses due to backend outages."
+
+      - alert: MCPServiceDown
+        expr: up{job="fastapi", instance=~"mcp-service:8008.*"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MCP Service Down"
+          description: "mcp-service:8008 has been unreachable for more than 1 minute. Autonomous AI agents cannot connect."
+

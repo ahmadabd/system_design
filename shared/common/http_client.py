@@ -12,7 +12,7 @@ class ResilientHTTPClient:
     for resilient service-to-service REST communication.
     """
     def __init__(self, timeout: float = 5.0):
-        self.client = httpx.AsyncClient(timeout=timeout)
+        self.client = httpx.AsyncClient(timeout=timeout, trust_env=False)
         self.breakers: Dict[str, AsyncCircuitBreaker] = {}
         self.default_timeout = timeout
 

@@ -1179,6 +1179,112 @@
       ],
       "title": "Redis Idempotency Cache Hit Ratio (%)",
       "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "lineWidth": 2,
+            "spanNulls": false
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 56
+      },
+      "id": 15,
+      "options": {
+        "legend": {
+          "calcs": ["mean", "max", "lastNotNull"],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "Prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (tool_name, status) (rate(mcp_tool_calls_total[1m])) or vector(0)",
+          "legendFormat": "MCP: {{tool_name}} ({{status}})",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "AI Agent & MCP Tool Invocations (RPS)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "lineWidth": 2,
+            "spanNulls": false
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 56
+      },
+      "id": 16,
+      "options": {
+        "legend": {
+          "calcs": ["mean", "max", "lastNotNull"],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "Prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, tool_name) (rate(mcp_tool_duration_seconds_bucket[1m]))) or vector(0)",
+          "legendFormat": "{{tool_name}} - P95 Latency",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "MCP Tool Latency (P95)",
+      "type": "timeseries"
     }
   ],
   "refresh": "5s",
@@ -1186,7 +1292,8 @@
   "style": "dark",
   "tags": [
     "backend",
-    "performance"
+    "performance",
+    "mcp"
   ],
   "templating": {
     "list": [
@@ -1201,14 +1308,14 @@
           "type": "prometheus",
           "uid": "Prometheus"
         },
-        "definition": "label_values(http_request_duration_seconds_count, instance)",
+        "definition": "label_values(up{job=\"fastapi\"}, instance)",
         "hide": 0,
         "includeAll": true,
         "multi": true,
         "name": "instance",
         "options": [],
         "query": {
-          "query": "label_values(http_request_duration_seconds_count, instance)",
+          "query": "label_values(up{job=\"fastapi\"}, instance)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 1,

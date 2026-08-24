@@ -19,7 +19,7 @@ graph TD
         Router["Path-Based Prefix Router"]
     end
 
-    subgraph BoundedContexts ["DDD Bounded Contexts (FastAPI)"]
+    subgraph BoundedContexts ["DDD Bounded Contexts (FastAPI & FastMCP)"]
         UserServ["user-service:8001"]
         ProdServ["product-service:8002"]
         OrdServ["order-service:8003"]
@@ -27,6 +27,7 @@ graph TD
         RepServ["reporting-service:8005"]
         WebhookServ["webhook-service:8006"]
         SupportServ["support-service:8007 (Agentic RAG)"]
+        MCPServ["mcp-service:8008 (Model Context Protocol)"]
     end
 
     subgraph DataCaching ["Data, Vector & Caching Tier"]
@@ -70,6 +71,7 @@ graph TD
     Router -->|"/reporting/*"| RepServ
     Router -->|"/webhooks/*"| WebhookServ
     Router -->|"/support/*"| SupportServ
+    Router -->|"/mcp/*"| MCPServ
 
     %% Database & Vector Connections
     UserServ -->|"db_breaker"| UserDB
@@ -346,7 +348,15 @@ system_design/
 │   │   ├── Dockerfile
 │   │   ├── requirements.txt
 │   │   └── src/
-│   └── webhook-service/
+│   ├── webhook-service/
+│   │   ├── Dockerfile
+│   │   ├── requirements.txt
+│   │   └── src/
+│   ├── support-service/
+│   │   ├── Dockerfile
+│   │   ├── requirements.txt
+│   │   └── src/
+│   └── mcp-server/
 │       ├── Dockerfile
 │       ├── requirements.txt
 │       └── src/
@@ -1289,8 +1299,9 @@ docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
 
 ### B. Inspecting Distributed Traces in Jaeger (`http://localhost:16686`)
 1. Open **[http://localhost:16686](http://localhost:16686)**.
-2. Select any service (`order-service`, `support-service`, `product-service`, `user-service`).
+2. Select any service (`mcp-service`, `order-service`, `support-service`, `product-service`, `user-service`).
 3. Click **Find Traces** to view the cascading execution graph:
+   - **MCP AI Agent Tool Waterfall**: Shows `MCP tool: create_order` $\rightarrow$ `HTTP POST /orders/` $\rightarrow$ Traefik Gateway $\rightarrow$ `order-service` $\rightarrow$ DB Transactional Outbox $\rightarrow$ Kafka Saga propagation.
    - **Order Saga Waterfall**: Shows `POST /orders` $\rightarrow$ User verification $\rightarrow$ Product verification $\rightarrow$ DB Outbox write $\rightarrow$ Kafka `order.created` send $\rightarrow$ Product consumer reservation $\rightarrow$ Payment consumer execution.
    - **AI Support Agent Waterfall**: Shows `POST /support/chat` $\rightarrow$ `langgraph.router` $\rightarrow$ `langgraph.retrieve` (Qdrant + BM25 + FlashRank) $\rightarrow$ `langgraph.tools` (HTTP calls to `order-service` / `product-service`) $\rightarrow$ `langgraph.generate` $\rightarrow$ `langgraph.check_hallucination`.
 
@@ -1309,3 +1320,104 @@ docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
    {service_name=~".+"} |= "ERROR"
    ```
 3. Click on any log line's **`trace_id`** badge to jump straight from Loki logs into the exact Jaeger trace!
+
+---
+
+## 🤖 12. Model Context Protocol (MCP) Server for AI Agents
+
+The platform includes a dedicated **Model Context Protocol (MCP)** microservice (`mcp-service:8008`, built with `mcp>=2.0.0` and `FastMCP`) enabling autonomous AI agents, desktop LLMs (Claude Desktop, Cursor, Antigravity), and agentic workflows to interact securely with the e-commerce platform.
+
+### Architectural Alignment with DDD & Enterprise NFRs
+- **Zero Direct Database Leakage**: Functions strictly as an **Anti-Corruption Layer (ACL)** calling API Gateway endpoints via `ResilientHTTPClient` rather than querying microservice databases directly.
+- **Idempotency Protection**: Mutating tools (`create_order`, `register_user`, `cancel_order`) generate or accept unique `X-Idempotency-Key` headers stored in Redis to prevent duplicate purchases or double refunds during agent retry loops.
+- **Circuit Breaker Fast-Failing**: Automatically traps `CircuitBreakerOpenException` to return actionable, LLM-friendly diagnostic explanations when backend services undergo maintenance.
+- **Multi-Tenant Scoping**: Injects `X-Tenant-ID` into every HTTP request to enforce PostgreSQL schema-per-tenant isolation.
+- **Asynchronous Saga Triggering**: Order creation initiates the decentralized Kafka Saga and returns `PENDING` status immediately.
+
+```
+┌────────────────────────────────────────────────────────┐
+│             External / Internal AI Agent               │
+│        (Claude Desktop, Cursor, Antigravity)           │
+└──────────────────────────┬─────────────────────────────┘
+                           │ JSON-RPC 2.0 (SSE / stdio)
+┌──────────────────────────▼─────────────────────────────┐
+│             mcp-service:8008 (FastMCP)                 │
+│  ┌──────────────────┬──────────────────┬────────────┐  │
+│  │      Tools       │    Resources     │  Prompts   │  │
+│  │ (register, order,│(policies, FAQs,  │ (shopping, │  │
+│  │  cancel, track)  │     catalog)     │troubleshoot│  │
+│  └──────────────────┴──────────────────┴────────────┘  │
+└──────────────────────────┬─────────────────────────────┘
+                           │ ResilientHTTPClient + Circuit Breakers
+┌──────────────────────────▼─────────────────────────────┐
+│          API Gateway (Traefik / Keepalived VIP)        │
+└────────────────────────────────────────────────────────┘
+```
+
+### Supported MCP Capabilities
+
+#### 1. Executable Tools (`tools/list` & `tools/call`)
+| Tool Name | Key Parameters | Description |
+| :--- | :--- | :--- |
+| `register_user` | `username`, `email`, `password`, `tenant_id` | Registers a customer account with idempotency protection. |
+| `get_user_profile`| `user_id`, `tenant_id` | Looks up customer account details. |
+| `list_products` | `tenant_id` | Lists all products, prices, and stock in the tenant catalog. |
+| `get_product_details` | `product_id`, `tenant_id` | Fetches real-time price and `in_stock` boolean flag. |
+| `create_order` | `user_id`, `product_id`, `quantity`, `total_price`, `payment_method`, `tenant_id` | Initiates the asynchronous Kafka Choreographed Saga. |
+| `get_order_status`| `order_id`, `tenant_id` | Real-time status lookup (`PENDING`, `CONFIRMED`, `CANCELLED`). |
+| `cancel_order` | `order_id`, `reason`, `tenant_id` | Triggers Saga compensation (inventory release & payment refund). |
+
+#### 2. Contextual Resources (`resources/list` & `resources/read`)
+- `ecommerce://policies/returns`: Official return, cancellation, and refund policies.
+- `ecommerce://policies/shipping`: Delivery SLAs and multi-tenant fulfillment terms.
+- `ecommerce://support/faq`: Common customer troubleshooting questions.
+
+#### 3. Agent Prompt Workflows (`prompts/list` & `prompts/get`)
+- `shopping_assistant`: Structured instructions for customer discovery, inventory checks, and order submission.
+- `order_troubleshooting`: Structured instructions for order status checks and cancellation verification.
+
+### How to Connect AI Agents to the MCP Server
+
+#### Option A: Remote SSE / HTTP Transport (Docker Microservice on port 8008)
+Add this to your AI client configuration (e.g. `claude_desktop_config.json`):
+```json
+{
+  "mcpServers": {
+    "ecommerce-platform": {
+      "url": "http://localhost:8008/sse"
+    }
+  }
+}
+```
+
+#### Option B: Local stdio Transport
+```json
+{
+  "mcpServers": {
+    "ecommerce-local": {
+      "command": "python",
+      "args": ["-m", "src.main"],
+      "env": {
+        "PYTHONPATH": "/path/to/system_design/services/mcp-server:/path/to/system_design",
+        "TRANSPORT_MODE": "stdio",
+        "API_GATEWAY_URL": "http://localhost"
+      }
+    }
+  }
+}
+```
+
+#### Option C: Visual Debugging with MCP Inspector
+```bash
+# Test all tools, resources, and prompts interactively in the web UI:
+npx @modelcontextprotocol/inspector python -m src.main
+```
+
+### 📊 MCP Observability & Grafana Dashboard
+A dedicated Grafana telemetry dashboard (**`Model Context Protocol (MCP) Agent Monitoring`**) is automatically provisioned at `http://localhost:3000`:
+- **AI Agent Tool Invocation Throughput**: Real-time rate of tool executions (`mcp_tool_calls_total`) categorized by action (`create_order`, `register_user`, `cancel_order`) and status (`submitted`, `created`, `found`, `cancelled`).
+- **Circuit Breaker Fast-Fails**: Tracks degraded tool encounters (`mcp_circuit_breaker_trips_total`).
+- **Execution Latency (P50/P95)**: Latency histogram for every tool (`mcp_tool_duration_seconds`).
+- **Contextual Resource & Prompt Reads**: Monitors resource lookups (`mcp_resource_reads_total`) and prompt workflow generations (`mcp_prompt_requests_total`).
+- **Multi-Tenant Segmentation**: Donut breakdown of tool calls by tenant (`store_tech`, `store_gaming`, `public`).
+- **Live Loki Log Stream**: Real-time JSON log aggregation for `{service_name="mcp-service"}` with linked `trace_id` badges for Jaeger tracing.
