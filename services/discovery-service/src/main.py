@@ -97,8 +97,47 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+import signal
+
+def register_graceful_shutdown(app: FastAPI, cleanup_callbacks: list, drain_seconds: float = 3.0):
+    """Registers signal handlers to cooperatively drain traffic and clean up resources"""
+    shut_logger = logging.getLogger("ShutdownHandler")
+
+    async def shutdown_handler(sig_num):
+        shut_logger.warning(f"Received shutdown signal {signal.Signals(sig_num).name} (SIGTERM/SIGINT). Draining traffic...")
+        shut_logger.info(f"Traffic draining in progress: sleeping for {drain_seconds} seconds...")
+        await asyncio.sleep(drain_seconds)
+
+        shut_logger.info("Executing discovery service resource cleanups...")
+        for callback in cleanup_callbacks:
+            try:
+                if asyncio.iscoroutinefunction(callback):
+                    await callback()
+                else:
+                    callback()
+            except Exception as e:
+                shut_logger.error(f"Error during cleanup callback: {e}", exc_info=True)
+
+        shut_logger.warning("Resource cleanup and traffic draining completed. Terminating process.")
+
+    try:
+        loop = asyncio.get_event_loop()
+        for sig in [signal.SIGTERM, signal.SIGINT]:
+            try:
+                loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(shutdown_handler(s)))
+            except (ValueError, NotImplementedError):
+                pass
+    except Exception:
+        pass
+
 # Prometheus metrics instrumentation
 Instrumentator().instrument(app).expose(app)
 
 # Include routes
 app.include_router(discovery_router)
+
+# Register cooperative graceful SIGTERM/SIGINT shutdown with traffic draining
+register_graceful_shutdown(
+    app,
+    []
+)

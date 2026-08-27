@@ -149,7 +149,14 @@ class KafkaManager:
                     store_id_int = hash(str(store_id))
                 
                 # Check available partitions for topic if known
-                known_partitions = self.producer.partitions_for(topic) if hasattr(self.producer, "partitions_for") else None
+                known_partitions = None
+                if hasattr(self.producer, "partitions_for"):
+                    p_res = self.producer.partitions_for(topic)
+                    if asyncio.iscoroutine(p_res):
+                        known_partitions = await p_res
+                    else:
+                        known_partitions = p_res
+
                 if known_partitions and len(known_partitions) >= 8:
                     if is_famous:
                         # Partitions 0-3 are dedicated to famous stores

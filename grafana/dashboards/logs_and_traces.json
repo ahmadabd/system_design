@@ -35,12 +35,12 @@
             "type": "loki",
             "uid": "Loki"
           },
-          "expr": "sum by (service_name, detected_level) (count_over_time({service_name=~\"${service_name:regex}\"}[5m])) or sum by (service_name) (count_over_time({service_name=~\"${service_name:regex}\"}[5m]))",
-          "legendFormat": "{{service_name}} - {{detected_level}}",
+          "expr": "sum by (service_name) (count_over_time({service_name=~\"${service_name:regex}\"}[1m]))",
+          "legendFormat": "{{service_name}}",
           "refId": "A"
         }
       ],
-      "title": "Log Volume by Level",
+      "title": "📊 Total Log Throughput by Service (1m)",
       "type": "timeseries"
     },
     {
@@ -49,12 +49,73 @@
         "uid": "Loki"
       },
       "gridPos": {
-        "h": 16,
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "id": 2,
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "Loki"
+          },
+          "expr": "sum by (service_name) (rate({service_name=~\"${service_name:regex}\"} |~ \"(?i)error|exception|fail|traceback\" [1m]))",
+          "legendFormat": "🔥 {{service_name}} Errors/sec",
+          "refId": "A"
+        }
+      ],
+      "title": "🚨 Error & Exception Rate / sec (Fleet-Wide)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "Loki"
+      },
+      "gridPos": {
+        "h": 12,
         "w": 24,
         "x": 0,
         "y": 8
       },
-      "id": 2,
+      "id": 3,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": true,
+        "showCommonLabels": false,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "Loki"
+          },
+          "expr": "{service_name=~\"${service_name:regex}\"} |~ \"(?i)error|exception|fail|critical|traceback|warning\"",
+          "refId": "A"
+        }
+      ],
+      "title": "🔥 Dedicated Fleet-Wide Error & Exception Stream (All Services)",
+      "type": "logs"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "Loki"
+      },
+      "gridPos": {
+        "h": 14,
+        "w": 24,
+        "x": 0,
+        "y": 20
+      },
+      "id": 4,
       "options": {
         "dedupStrategy": "none",
         "enableLogDetails": true,
@@ -75,7 +136,7 @@
           "refId": "A"
         }
       ],
-      "title": "Application Logs",
+      "title": "📜 Full Application Log Stream (Filtered by Service)",
       "type": "logs"
     }
   ],
@@ -84,7 +145,9 @@
   "style": "dark",
   "tags": [
     "backend",
-    "logs"
+    "logs",
+    "errors",
+    "observability"
   ],
   "templating": {
     "list": [
@@ -113,6 +176,6 @@
     "from": "now-1h",
     "to": "now"
   },
-  "title": "Backend Logs & Traces",
+  "title": "Backend Logs & Error Tracing",
   "uid": "logs-traces"
 }

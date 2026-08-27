@@ -85,6 +85,29 @@ def mock_gateway_adapter():
         "message": "Order #101 has been cancelled successfully. Refund initiated."
     })
 
+    # Mock discover_bundle
+    adapter.discover_bundle = AsyncMock(return_value={
+        "success": True,
+        "status": "success",
+        "data": {
+            "query": "Audio interface and microphone",
+            "recommended_bundle": {"bundle_name": "Studio Setup", "total_price": 498.00},
+            "final_markdown_response": "### Recommended Setup"
+        }
+    })
+
+    # Mock query_merchant_copilot
+    adapter.query_merchant_copilot = AsyncMock(return_value={
+        "success": True,
+        "status": "success",
+        "data": {
+            "query": "Show total revenue for store_tech",
+            "intent": "structured_analytics",
+            "sql_execution_result": [{"total_revenue": 12500.0, "total_orders": 45}],
+            "final_markdown_report": "### 📊 Merchant Copilot Executive Report"
+        }
+    })
+
     return adapter
 
 
@@ -106,6 +129,8 @@ async def test_mcp_server_capability_discovery(mcp_server):
     assert "create_order" in tool_names
     assert "get_order_status" in tool_names
     assert "cancel_order" in tool_names
+    assert "discover_product_bundle" in tool_names
+    assert "merchant_copilot_query" in tool_names
 
     resources = await mcp_server.list_resources()
     resource_uris = [str(r.uri) for r in resources]
@@ -299,3 +324,20 @@ async def test_mcp_opentelemetry_tracing(mcp_server):
     assert order_span.attributes["tenant.id"] == "store_gaming"
     assert order_span.attributes["mcp.user_id"] == 99
     assert order_span.attributes["mcp.product_id"] == 5
+
+
+@pytest.mark.asyncio
+async def test_mcp_merchant_copilot_query_tool(mcp_server, mock_gateway_adapter):
+    """Test merchant copilot tool execution."""
+    result = await mcp_server.call_tool("merchant_copilot_query", {
+        "query": "Show total revenue for store_tech",
+        "tenant_id": "store_tech"
+    })
+    assert not result.is_error
+    data = result.structured_content
+    assert data["result"]["success"] is True
+    assert data["result"]["data"]["intent"] == "structured_analytics"
+    mock_gateway_adapter.query_merchant_copilot.assert_called_once_with(
+        query="Show total revenue for store_tech",
+        tenant_id="store_tech"
+    )

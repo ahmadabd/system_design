@@ -312,3 +312,35 @@ def register_tools(mcp, adapter=gateway_adapter):
             if status == "degraded":
                 mcp_circuit_breaker_trips_total.labels(tool_name="discover_product_bundle").inc()
             return result
+
+    @mcp.tool(
+        name="merchant_copilot_query",
+        description="Query merchant analytical metrics (ClickHouse SQL) and store policies/SLAs (Qdrant Vector RAG) with self-correction and AST safety."
+    )
+    async def merchant_copilot_query(
+        query: str = Field(..., description="Natural language business or policy question (e.g. 'Show total revenue for store_tech and return SLA')"),
+        tenant_id: str = Field(default="store_tech", description="Store tenant context")
+    ) -> Dict[str, Any]:
+        """
+        Execute Hybrid Text-to-SQL + Policy RAG via Merchant Copilot.
+        Generates validated ClickHouse SQL and retrieves matching SLA policy guidelines.
+        """
+        with tracer.start_as_current_span("MCP tool: merchant_copilot_query") as span:
+            span.set_attribute("mcp.tool_name", "merchant_copilot_query")
+            span.set_attribute("mcp.query", query)
+            span.set_attribute("tenant.id", tenant_id)
+
+            start = time.perf_counter()
+            logger.info(f"[MCP Tool: merchant_copilot_query] query='{query}', tenant={tenant_id}")
+            result = await adapter.query_merchant_copilot(query=query, tenant_id=tenant_id)
+            duration = time.perf_counter() - start
+            status = result.get("status", "unknown")
+
+            span.set_attribute("mcp.status", status)
+            span.set_attribute("mcp.success", result.get("success", False))
+
+            mcp_tool_calls_total.labels(tool_name="merchant_copilot_query", status=status, tenant_id=tenant_id).inc()
+            mcp_tool_duration_seconds.labels(tool_name="merchant_copilot_query").observe(duration)
+            if status == "degraded":
+                mcp_circuit_breaker_trips_total.labels(tool_name="merchant_copilot_query").inc()
+            return result

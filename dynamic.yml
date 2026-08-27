@@ -88,6 +88,14 @@ http:
         - "strip-discovery"
       service: discovery-service
 
+    copilot-router:
+      rule: "PathPrefix(`/copilot`)"
+      middlewares:
+        - "load-shedding"
+        - "rate-limit"
+        - "strip-copilot"
+      service: merchant-copilot-service
+
   middlewares:
     load-shedding:
       inFlightReq:
@@ -148,6 +156,11 @@ http:
       stripPrefix:
         prefixes:
           - "/discovery"
+
+    strip-copilot:
+      stripPrefix:
+        prefixes:
+          - "/copilot"
 
 
   services:
@@ -227,3 +240,12 @@ http:
           timeout: 1s
         servers:
           - url: "http://discovery-service:8009"
+
+    merchant-copilot-service:
+      loadBalancer:
+        healthCheck:
+          path: /health
+          interval: 2s
+          timeout: 1s
+        servers:
+          - url: "http://merchant-copilot-service:8010"

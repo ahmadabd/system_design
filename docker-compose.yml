@@ -352,6 +352,56 @@ services:
     networks:
       - ecommerce-network
 
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3-alpine
+    container_name: clickhouse
+    ports:
+      - "${CLICKHOUSE_HTTP_PORT:-8123}:8123"
+      - "${CLICKHOUSE_NATIVE_PORT:-9000}:9000"
+    environment:
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB:-copilot_analytics}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-default}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-clickhouse123}
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    networks:
+      - ecommerce-network
+
+  merchant-copilot-service:
+    build:
+      context: .
+      dockerfile: services/merchant-copilot-service/Dockerfile
+    container_name: merchant-copilot-service
+    restart: unless-stopped
+    ports:
+      - "${COPILOT_SERVICE_PORT:-8010}:${COPILOT_SERVICE_PORT:-8010}"
+    environment:
+      - PORT=${COPILOT_SERVICE_PORT:-8010}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - SERVICE_NAME=merchant-copilot-service
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_DB=copilot_analytics
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=clickhouse123
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - PRODUCT_SERVICE_URL=http://product-service:8002
+      - ORDER_SERVICE_URL=http://order-service:8003
+      - PAYMENT_SERVICE_URL=http://payment-service:8004
+      - API_GATEWAY_URL=http://traefik-master:80
+      - KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS:-kafka:29092}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+    depends_on:
+      - clickhouse
+      - qdrant
+      - kafka
+      - product-service
+      - order-service
+    networks:
+      - ecommerce-network
+
   traefik-master:
     image: traefik:v3.7
     container_name: traefik-master
@@ -373,6 +423,8 @@ services:
       - webhook-service
       - support-service
       - mcp-service
+      - discovery-service
+      - merchant-copilot-service
 
   traefik-backup:
     image: traefik:v3.7
@@ -392,6 +444,8 @@ services:
       - webhook-service
       - support-service
       - mcp-service
+      - discovery-service
+      - merchant-copilot-service
 
   keepalived-master:
     image: osixia/keepalived:latest
@@ -474,6 +528,8 @@ volumes:
   reporting_db_data:
   webhook_db_data:
   qdrant_data:
+  clickhouse_data:
+
 
 
 

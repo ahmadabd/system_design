@@ -2,7 +2,7 @@ import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
-from shared.common.observability import setup_observability
+from shared.common.observability import setup_observability, register_graceful_shutdown
 from shared.common.resilience import CircuitBreakerOpenException
 from src.infrastructure.config import settings
 from src.infrastructure.qdrant_setup import qdrant_manager
@@ -54,3 +54,9 @@ async def circuit_breaker_exception_handler(request: Request, exc: CircuitBreake
     )
 
 app.include_router(router)
+
+# Register cooperative graceful SIGTERM/SIGINT shutdown with traffic draining
+register_graceful_shutdown(
+    app,
+    [idempotency_manager.close]
+)

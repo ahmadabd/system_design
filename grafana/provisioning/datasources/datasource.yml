@@ -18,8 +18,14 @@ datasources:
     jsonData:
       derivedFields:
         - name: TraceID
-          matcherType: label
-          matcherRegex: trace_id
+          matcherType: regex
+          matcherRegex: '"trace_id":\s*"([a-f0-9]+)"'
+          url: "$${__value.raw}"
+          datasourceUid: Jaeger
+          urlDisplayLabel: "View Trace"
+        - name: TraceID_Plain
+          matcherType: regex
+          matcherRegex: 'trace_id=([a-f0-9]+)'
           url: "$${__value.raw}"
           datasourceUid: Jaeger
           urlDisplayLabel: "View Trace"

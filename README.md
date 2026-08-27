@@ -28,6 +28,8 @@ graph TD
         WebhookServ["webhook-service:8006"]
         SupportServ["support-service:8007 (Agentic RAG)"]
         MCPServ["mcp-service:8008 (Model Context Protocol)"]
+        DiscoveryServ["discovery-service:8009 (Product Discovery & Bundles)"]
+        CopilotServ["merchant-copilot-service:8010 (ClickHouse Text-to-SQL)"]
     end
 
     subgraph DataCaching ["Data, Vector & Caching Tier"]
@@ -37,6 +39,7 @@ graph TD
         PayDB[("payment_db: PostgreSQL")]
         RepDB[("reporting_db: PostgreSQL")]
         WebhookDB[("webhook_db: PostgreSQL")]
+        ClickHouseDB[("clickhouse: Columnar OLAP")]
         QdrantDB[("qdrant: Vector Database")]
         Redis[("redis: Redis 7")]
     end
@@ -72,8 +75,10 @@ graph TD
     Router -->|"/webhooks/*"| WebhookServ
     Router -->|"/support/*"| SupportServ
     Router -->|"/mcp/*"| MCPServ
+    Router -->|"/discovery/*"| DiscoveryServ
+    Router -->|"/copilot/*"| CopilotServ
 
-    %% Database & Vector Connections
+    %% Database, OLAP & Vector Connections
     UserServ -->|"db_breaker"| UserDB
     ProdServ -->|"db_breaker"| ProdDB
     OrdServ -->|"db_breaker"| OrdDB
@@ -81,6 +86,9 @@ graph TD
     RepServ -->|"db_breaker"| RepDB
     WebhookServ -->|"db_breaker"| WebhookDB
     SupportServ -->|"qdrant_breaker"| QdrantDB
+    DiscoveryServ -->|"qdrant_breaker"| QdrantDB
+    CopilotServ -->|"qdrant_breaker"| QdrantDB
+    CopilotServ -->|"MicroBatcher Insert"| ClickHouseDB
 
 
     %% Idempotency Cache Connections
@@ -105,6 +113,8 @@ graph TD
     Kafka -.->|"Event Subscription / Inbox Pattern"| PayServ
     Kafka -.->|"Event Subscription / Inbox Pattern"| RepServ
     Kafka -.->|"Event Subscription / Inbox Pattern"| WebhookServ
+    Kafka -.->|"Real-Time Embedding Sync"| DiscoveryServ
+    Kafka -.->|"Micro-Batcher Stream Ingestion"| CopilotServ
 
     %% Webhook Outbound Connection
     WebhookServ -->|"POST Resilient Webhook Dispatch"| PartnerWebhook
@@ -116,6 +126,10 @@ graph TD
     PayServ -->|"OTel Traces & Metrics"| OTel
     RepServ -->|"OTel Traces & Metrics"| OTel
     WebhookServ -->|"OTel Traces & Metrics"| OTel
+    SupportServ -->|"OTel Traces & Metrics"| OTel
+    MCPServ -->|"OTel Traces & Metrics"| OTel
+    DiscoveryServ -->|"OTel Traces & Metrics"| OTel
+    CopilotServ -->|"OTel Traces & Metrics"| OTel
     Traefik -->|"OTel Traces & Metrics"| OTel
 
     OTel -->|"Traces"| JG
@@ -675,6 +689,12 @@ Fill in the custom database credentials, port configurations, and Redis credenti
 | **Payment Service OpenAPI Docs**| `8004` | `http://localhost/payments/docs` or `http://localhost:8004/docs` |
 | **Reporting Service OpenAPI Docs**| `8005` | `http://localhost/reporting/docs` or `http://localhost:8005/docs` |
 | **Webhook Service OpenAPI Docs** | `8006` | `http://localhost/webhooks/docs` or `http://localhost:8006/docs` |
+| **AI Support Service OpenAPI Docs**| `8007` | `http://localhost/support/docs` or `http://localhost:8007/docs` |
+| **MCP Server (FastMCP / SSE)** | `8008` | `http://localhost/mcp/sse` or `http://localhost:8008/sse` |
+| **Discovery Service OpenAPI Docs**| `8009` | `http://localhost/discovery/docs` or `http://localhost:8009/docs` |
+| **Merchant Copilot OpenAPI Docs** | `8010` | `http://localhost/copilot/docs` or `http://localhost:8010/docs` |
+| **Qdrant Vector Database Web UI**| `6333` | `http://localhost:6333/dashboard` |
+| **ClickHouse Web Client (Play UI)**| `8123` | `http://localhost:8123/play` |
 | **Jaeger Distributed Tracing** | `16686` | `http://localhost:16686/` |
 | **Grafana Telemetry Dashboard**| `3000` | `http://localhost:3000/` |
 | **Prometheus Metrics Engine** | `9090` | `http://localhost:9090/` |
@@ -982,6 +1002,15 @@ All service interactions are routed through the Traefik Gateway on port `80`.
 | **Reporting Service** | `GET` | `/reporting/customers/{customer_id}/dashboard` | `:8005/customers/{customer_id}/dashboard` | None (Path Parameter) | No |
 | **Webhook Service**   | `GET` | `/webhooks/stores`                       | `:8006/stores`                          | None                  | No  |
 | **Webhook Service**   | `GET` | `/webhooks/logs`                         | `:8006/logs`                            | None                  | No  |
+| **AI Support Service**| `POST`| `/support/chat`                          | `:8007/chat`                            | `{"message", "session_id", "user_id"}`  | No  |
+| **AI Support Service**| `POST`| `/support/actions/confirm`               | `:8007/actions/confirm`                 | `{"session_id", "approved"}`            | No  |
+| **AI Support Service**| `GET` | `/support/eval/benchmark`                | `:8007/eval/benchmark`                 | None                                    | No  |
+| **MCP Server**        | `GET` | `/mcp/sse`                               | `:8008/sse`                             | SSE Connection URL                      | No  |
+| **MCP Server**        | `POST`| `/mcp/messages/`                         | `:8008/messages/`                       | JSON-RPC 2.0 Request Payload            | No  |
+| **Discovery Service** | `POST`| `/discovery/chat`                        | `:8009/chat`                            | `{"query", "session_id", "budget"}`     | No  |
+| **Discovery Service** | `GET` | `/discovery/health`                      | `:8009/health`                          | None                                    | No  |
+| **Merchant Copilot**  | `POST`| `/copilot/chat`                          | `:8010/chat`                            | `{"query", "session_id", "tenant_id"}`  | No  |
+| **Merchant Copilot**  | `GET` | `/copilot/health`                        | `:8010/health`                          | None                                    | No  |
 
 ---
 
@@ -1110,6 +1139,152 @@ All service interactions are routed through the Traefik Gateway on port `80`.
 * **Retrieve Historical Webhook Delivery Logs**:
   ```bash
   curl -i http://localhost/webhooks/logs
+  ```
+
+##### 7. AI Customer Support Assistant (`support-service:8007`)
+* **Policy FAQ Query (Two-Stage Hybrid Search & Re-Ranking)**:
+  ```bash
+  curl -s -X POST http://localhost/support/chat \
+    -H "Content-Type: application/json" \
+    -H "X-Tenant-ID: store_tech" \
+    -d '{
+      "session_id": "faq_session_01",
+      "message": "What is the return window for electronics and who pays for return shipping?"
+    }'
+  ```
+* **Live Order Query (Self-RAG Reflection & Database Tool Lookup)**:
+  ```bash
+  curl -s -X POST http://localhost/support/chat \
+    -H "Content-Type: application/json" \
+    -H "X-Tenant-ID: store_tech" \
+    -d '{
+      "user_id": "1",
+      "session_id": "order_query_01",
+      "message": "What is the status of my order #1 and when was it placed?"
+    }'
+  ```
+* **Human-in-the-Loop Order Cancellation (Step 1: Freezes at Breakpoint)**:
+  ```bash
+  curl -s -X POST http://localhost/support/chat \
+    -H "Content-Type: application/json" \
+    -H "X-Tenant-ID: store_tech" \
+    -d '{
+      "user_id": "1",
+      "session_id": "hitl_cancel_01",
+      "message": "Please cancel my order #1"
+    }'
+  ```
+* **Human Approval Confirmation (Step 2: Resumes Execution & Mutates DB)**:
+  ```bash
+  curl -s -X POST http://localhost/support/actions/confirm \
+    -H "Content-Type: application/json" \
+    -H "X-Tenant-ID: store_tech" \
+    -d '{
+      "session_id": "hitl_cancel_01",
+      "approved": true
+    }'
+  ```
+* **Fetch Automated RAG Triad Benchmark Scores**:
+  ```bash
+  curl -s http://localhost/support/eval/benchmark
+  ```
+
+##### 8. Semantic Product Discovery & Bundle Builder (`discovery-service:8009`)
+* **Health Check**:
+  ```bash
+  curl -s http://localhost/discovery/health
+  ```
+* **Semantic Vector Search (Natural Language Catalog Lookup)**:
+  ```bash
+  curl -s -X POST http://localhost/discovery/chat \
+    -H "Content-Type: application/json" \
+    -H "X-Tenant-ID: store_tech" \
+    -d '{
+      "query": "Ergonomic chair and studio microphone for podcasting",
+      "tenant_id": "store_tech"
+    }'
+  ```
+* **Budget-Constrained Bundle Optimization (Knapsack Algorithm)**:
+  ```bash
+  curl -s -X POST http://localhost/discovery/chat \
+    -H "Content-Type: application/json" \
+    -H "X-Tenant-ID: store_tech" \
+    -d '{
+      "query": "Complete creator setup with high quality mic and headphones under $600",
+      "tenant_id": "store_tech",
+      "budget": 600.0
+    }'
+  ```
+* **Compound Query Decomposition & HyDE**:
+  ```bash
+  curl -s -X POST http://localhost/discovery/chat \
+    -H "Content-Type: application/json" \
+    -H "X-Tenant-ID: store_tech" \
+    -d '{
+      "query": "Gaming laptop and ultrawide monitor with mechanical keyboard",
+      "tenant_id": "store_tech",
+      "budget": 2000.0
+    }'
+  ```
+
+##### 9. Merchant Copilot Analytics & Policy Assistant (`merchant-copilot-service:8010`)
+* **Health Check & OLAP Status**:
+  ```bash
+  curl -s http://localhost/copilot/health
+  ```
+* **Structured Analytics Query (Text-to-SQL on ClickHouse)**:
+  ```bash
+  curl -s -X POST http://localhost/copilot/chat \
+    -H "Content-Type: application/json" \
+    -H "X-Tenant-ID: store_tech" \
+    -d '{
+      "query": "Show our top 5 products by price and stock levels",
+      "tenant_id": "store_tech"
+    }'
+  ```
+* **Store Revenue & Order Aggregations (ClickHouse Columnar Execution)**:
+  ```bash
+  curl -s -X POST http://localhost/copilot/chat \
+    -H "Content-Type: application/json" \
+    -H "X-Tenant-ID: store_tech" \
+    -d '{
+      "query": "What is our total sales revenue and confirmed order count?",
+      "tenant_id": "store_tech"
+    }'
+  ```
+* **Hybrid Analytics + Store Return SLA Guidelines (ClickHouse + Qdrant Policy RAG)**:
+  ```bash
+  curl -s -X POST http://localhost/copilot/chat \
+    -H "Content-Type: application/json" \
+    -H "X-Tenant-ID: store_tech" \
+    -d '{
+      "query": "Show our top products by price and what is our return and refund policy for electronics?",
+      "tenant_id": "store_tech"
+    }'
+  ```
+* **Tenant Isolation & Multi-Tenant Query Validation**:
+  ```bash
+  curl -s -X POST http://localhost/copilot/chat \
+    -H "Content-Type: application/json" \
+    -H "X-Tenant-ID: store_gaming" \
+    -d '{
+      "query": "List all products in our catalog",
+      "tenant_id": "store_gaming"
+    }'
+  ```
+
+##### 10. Model Context Protocol (MCP) Server Endpoints (`mcp-service:8008`)
+* **Health & Readiness Check**:
+  ```bash
+  curl -s http://localhost/mcp/health
+  ```
+* **Prometheus Metrics Endpoint**:
+  ```bash
+  curl -s http://localhost/mcp/metrics
+  ```
+* **Establish SSE Event Stream for AI Agents**:
+  ```bash
+  curl -i -N http://localhost/mcp/sse
   ```
 
 ---
@@ -1366,6 +1541,8 @@ The platform includes a dedicated **Model Context Protocol (MCP)** microservice 
 | `create_order` | `user_id`, `product_id`, `quantity`, `total_price`, `payment_method`, `tenant_id` | Initiates the asynchronous Kafka Choreographed Saga. |
 | `get_order_status`| `order_id`, `tenant_id` | Real-time status lookup (`PENDING`, `CONFIRMED`, `CANCELLED`). |
 | `cancel_order` | `order_id`, `reason`, `tenant_id` | Triggers Saga compensation (inventory release & payment refund). |
+| `discover_product_bundle` | `query`, `budget`, `tenant_id` | Semantic bundle builder and price optimizer under budget constraints. |
+| `merchant_copilot_query` | `query`, `tenant_id` | Hybrid Text-to-SQL (ClickHouse) + Vector Policy RAG (Qdrant). |
 
 #### 2. Contextual Resources (`resources/list` & `resources/read`)
 - `ecommerce://policies/returns`: Official return, cancellation, and refund policies.
@@ -1450,3 +1627,172 @@ graph TD
    - **Prometheus & Grafana**: Scrapes `/metrics` for `discovery_requests_total`, `discovery_node_duration_seconds`, and `qdrant_search_duration_seconds`.
    - **Circuit Breakers**: `AsyncCircuitBreaker` fast-fails if the vector store is offline.
    - **MCP Tool**: Exposed as `discover_product_bundle` for autonomous AI agents.
+
+### 🧪 Testing the Discovery & Bundle Builder Service
+
+#### 1. Single-Item Semantic Search
+```bash
+curl -s -X POST http://localhost/discovery/chat \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-ID: store_tech" \
+  -d '{
+    "query": "Ergonomic chair with lumbar support",
+    "tenant_id": "store_tech"
+  }'
+```
+
+#### 2. Multi-Item Budget-Constrained Bundle Optimization
+```bash
+curl -s -X POST http://localhost/discovery/chat \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-ID: store_tech" \
+  -d '{
+    "query": "Audio interface and studio microphone setup",
+    "tenant_id": "store_tech",
+    "budget": 500.0
+  }'
+```
+
+---
+
+## 📊 14. Merchant Copilot Service (ClickHouse OLAP & Hybrid Policy RAG)
+
+The **`merchant-copilot-service`** on port **`8010`** provides an enterprise-grade analytical copilot for store merchants. It combines **ClickHouse Columnar OLAP** for high-throughput aggregations, **Qdrant** for store policy guidelines, **`sqlglot`** for strict AST safety, and a **7-node LangGraph State Machine** featuring a self-correction feedback loop.
+
+### 📐 LangGraph Workflow Architecture
+
+```mermaid
+flowchart TD
+    subgraph StreamLayer["Event Stream Ingestion & Micro-Batching"]
+        Kafka["Kafka Topics (8 Partitions)\nproduct.*, order.*, payment.*"] --> Consumer["aiokafka Consumer\n(merchant-copilot-group)"]
+        Consumer --> Batcher["ClickHouseMicroBatcher\n(asyncio.Queue Buffer)"]
+        Batcher -->|Flush: size >= 500 or time >= 1.0s| ClickHouse[("ClickHouse OLAP Database\n(ReplacingMergeTree Engine)")]
+        ClickHouse -->|Batch Insert Acknowledged| CommitOffset["Commit Kafka Offset\n(Guaranteed At-Least-Once Delivery)"]
+    end
+
+    subgraph GraphWorkflow["LangGraph Text-to-SQL + Policy StateGraph"]
+        MerchantQuery["Merchant Business Query"] --> IntentClass["1. intent_classifier\n(structured_analytics | policy_guidelines | hybrid)"]
+        
+        IntentClass -->|Structured / Hybrid| SchemaLink["2. schema_linking\n(Qdrant Vector Catalog)"]
+        IntentClass -->|Policy / Hybrid| PolicyRetriever["3. policy_retriever\n(Qdrant Policy Store)"]
+        
+        SchemaLink --> TextToSQL["4. text_to_sql_generator\n(ClickHouse SQL with Tenant Filter)"]
+        TextToSQL --> ASTValidation{"5. ast_validation\n(sqlglot ClickHouse Dialect)"}
+        
+        ASTValidation -->|Syntax Error / Policy Violation| SelfCorrection["6. sql_self_correction\n(LLM Self-Correction Edge Loop)"]
+        SelfCorrection -->|Retry Attempt <= 3| ASTValidation
+        
+        ASTValidation -->|Valid & Safe| SQLExec["7. sql_executor\n(Execute on ClickHouse)"]
+        SQLExec --> Synthesizer["8. response_synthesizer\n(Combine OLAP Table + Policy Markdown)"]
+        PolicyRetriever --> Synthesizer
+    end
+
+    subgraph Delivery["API & Autonomous Agent Ingress"]
+        Synthesizer --> FastAPIChat["POST /copilot/chat"]
+        FastAPIChat --> TraefikRoute["Traefik Gateway (/copilot)"]
+        TraefikRoute --> MCPTool["MCP Tool: merchant_copilot_query"]
+    end
+```
+
+### 🧠 Core Architectural Innovations
+
+#### 1. ClickHouse "Too Many Parts" Mitigation (`ClickHouseMicroBatcher`)
+- **Challenge**: ClickHouse creates an immutable data part per insert. Inserting high-velocity individual events directly from Kafka causes the `DB::Exception: Too many parts in all data parts in table` error.
+- **Solution**: Built `ClickHouseMicroBatcher` (`src/adapter/micro_batcher.py`) utilizing an asynchronous in-memory queue that buffers incoming Kafka events and flushes them in bulk when the queue reaches **500 records** or **1.0 second** has elapsed.
+
+#### 2. Zero Data Loss & Crash Recovery
+- **Challenge**: If an in-memory buffer crashes before records are persisted to disk, buffered messages could be lost.
+- **Solution**: Kafka consumer message offsets are committed **only after** `clickhouse_client.insert_batch` returns success from disk. On container crash/restart, Kafka re-delivers uncommitted messages, and ClickHouse `ReplacingMergeTree` deduplicates records automatically.
+
+#### 3. `sqlglot` AST Safety & Tenant Isolation Validator
+- **Challenge**: LLMs can hallucinate destructive SQL (`DROP TABLE`, `DELETE`, `UPDATE`, `INSERT`) or omit tenant filtering, resulting in cross-tenant data leaks.
+- **Solution**: Built `SQLASTValidator` (`src/adapter/ast_validator.py`) using `sqlglot`. It enforces that the parsed AST:
+  - Is strictly a read-only `SELECT` or `UNION` statement.
+  - Contains an explicit `tenant_id = '<store>'` predicate on all queried tables.
+  - Rejects system commands, schema alterations, and multi-statement injection attempts.
+
+#### 4. LangGraph Dynamic Self-Correction Feedback Loop
+- When AST validation or ClickHouse execution fails, the graph routes execution to `sql_self_correction`, passing the AST error, tenant ID, and original query. The healed query routes back to `ast_validation` up to 3 times before graceful degradation.
+
+#### 5. Dynamic Schema Linking via Qdrant Vector Catalog
+- ClickHouse table DDLs and column descriptions are embedded and indexed in Qdrant (`clickhouse_schema_catalog`). The copilot dynamically links only relevant table schemas into the LLM prompt rather than overloading the context window with the entire database catalog.
+
+---
+
+### 🧪 Testing the Merchant Copilot Service
+
+#### 1. Health & Backend Readiness
+```bash
+curl -s http://localhost/copilot/health
+```
+**Sample Response**:
+```json
+{
+  "status": "healthy",
+  "service": "merchant-copilot-service",
+  "olap_backend": "ClickHouse",
+  "vector_backend": "Qdrant",
+  "rag_mode": "Hybrid Text-to-SQL + Policy RAG"
+}
+```
+
+#### 2. Structured Analytics Query (ClickHouse Columnar Text-to-SQL)
+```bash
+curl -s -X POST http://localhost/copilot/chat \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-ID: store_tech" \
+  -d '{
+    "query": "Show our top 5 products by price and stock levels",
+    "tenant_id": "store_tech"
+  }'
+```
+**Sample Response**:
+```markdown
+### 📊 Merchant Copilot Executive Report (`store_tech`)
+
+**Query**: *"Show our top 5 products by price and stock levels"*
+
+#### 📈 Quantitative Data (ClickHouse OLAP)
+| id | name | category | price | stock |
+| --- | --- | --- | --- | --- |
+| 2 | Gaming Laptop | Electronics | 1299.99 | 10 |
+| 1 | Gaming Laptop | Electronics | 1299.99 | 12 |
+| 15 | Aria Chair | Electronics | 695.0 | 12 |
+| 14 | Herman Miller Aeron Ergonomic Office Chair | Electronics | 695.0 | 12 |
+| 9 | Shure SM7B Dynamic Cardioid Vocal Microphone | Electronics | 399.0 | 15 |
+
+> **Executed SQL**: `SELECT id, name, category, price, stock FROM copilot_analytics.products_analytics WHERE tenant_id = 'store_tech' ORDER BY price DESC LIMIT 5`
+```
+
+#### 3. Hybrid Analytics + Policy SLA Guidelines
+```bash
+curl -s -X POST http://localhost/copilot/chat \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-ID: store_tech" \
+  -d '{
+    "query": "Show our top products by price and what is our return and refund policy for electronics?",
+    "tenant_id": "store_tech"
+  }'
+```
+**Sample Response**:
+```markdown
+### 📊 Merchant Copilot Executive Report (`store_tech`)
+
+**Query**: *"Show our top products by price and what is our return and refund policy for electronics?"*
+
+#### 📈 Quantitative Data (ClickHouse OLAP)
+| id | name | category | price | stock |
+| --- | --- | --- | --- | --- |
+| 2 | Gaming Laptop | Electronics | 1299.99 | 10 |
+| 1 | Gaming Laptop | Electronics | 1299.99 | 12 |
+
+#### 📜 Store Policies & SLA Guidelines (Qdrant Vector Store)
+- **Standard 30-Day Customer Return Policy & Refund SLA**: Customers may initiate a return for any unopened or gently inspected item within 30 days of delivery. Inspection completed within 2 business days. Refunds processed in 3-5 banking days.
+- **Electronics & Hardware Warranty Guidelines**: All hardware products include a 1-year comprehensive manufacturer warranty covering internal component defects.
+```
+
+#### 4. Automated Pytest Test Suite
+```bash
+PYTHONPATH=services/merchant-copilot-service ./.venv/bin/pytest tests/test_merchant_copilot_service.py -v
+```
+All 6 tests verify AST security parsing, micro-batching mechanics, Qdrant policy retrieval, LLM heuristics, LangGraph workflow execution, and FastAPI endpoints.

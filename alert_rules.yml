@@ -122,3 +122,31 @@ groups:
           summary: "High Latency in Discovery LangGraph Node: {{ $labels.node_name }}"
           description: "LangGraph node {{ $labels.node_name }} has P95 latency exceeding 2.5s."
 
+      - alert: CopilotServiceDown
+        expr: up{job="fastapi", instance=~"merchant-copilot-service:8010.*"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Merchant Copilot Service Down"
+          description: "merchant-copilot-service:8010 has been unreachable for more than 1 minute. ClickHouse Text-to-SQL is offline."
+
+      - alert: CopilotSQLCorrectionSpike
+        expr: sum(rate(merchant_copilot_sql_self_corrections_total[2m])) > 0.5
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Spike in Merchant Copilot SQL Self-Correction Loops"
+          description: "LLM Text-to-SQL generation is producing invalid queries and triggering frequent self-correction retries."
+
+      - alert: CopilotHighLatency
+        expr: histogram_quantile(0.95, sum by (le, node_name) (rate(merchant_copilot_node_duration_seconds_bucket[2m]))) > 3.0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High Latency in Copilot LangGraph Node: {{ $labels.node_name }}"
+          description: "LangGraph node {{ $labels.node_name }} has P95 latency exceeding 3.0s."
+
+
