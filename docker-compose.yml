@@ -327,6 +327,31 @@ services:
     networks:
       - ecommerce-network
 
+  discovery-service:
+    build:
+      context: .
+      dockerfile: services/discovery-service/Dockerfile
+    container_name: discovery-service
+    restart: unless-stopped
+    ports:
+      - "${DISCOVERY_SERVICE_PORT:-8009}:${DISCOVERY_SERVICE_PORT:-8009}"
+    environment:
+      - PORT=${DISCOVERY_SERVICE_PORT:-8009}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - SERVICE_NAME=discovery-service
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - PRODUCT_SERVICE_URL=http://product-service:8002
+      - API_GATEWAY_URL=http://traefik-master:80
+      - KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS:-kafka:29092}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+    depends_on:
+      - qdrant
+      - kafka
+      - product-service
+    networks:
+      - ecommerce-network
+
   traefik-master:
     image: traefik:v3.7
     container_name: traefik-master

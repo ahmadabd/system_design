@@ -274,12 +274,128 @@
       ],
       "title": "Live Support Service Structured Logs & Trace Correlation",
       "type": "logs"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 20
+      },
+      "id": 101,
+      "title": "Semantic Product Discovery & LangGraph Bundle Builder",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "lineWidth": 2,
+            "spanNulls": false
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 21
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "calcs": ["mean", "max", "lastNotNull"],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "Prometheus"
+          },
+          "expr": "sum by (request_type, status) (rate(discovery_requests_total[1m])) or vector(0)",
+          "legendFormat": "{{request_type}} ({{status}})",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Discovery & Bundle Request Throughput",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "lineWidth": 2,
+            "spanNulls": false
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 21
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "calcs": ["mean", "max", "lastNotNull"],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "Prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, node_name) (rate(discovery_node_duration_seconds_bucket[1m]))) or vector(0)",
+          "legendFormat": "Node: {{node_name}} (P95)",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Discovery LangGraph Node Latency (P95)",
+      "type": "timeseries"
     }
   ],
   "refresh": "5s",
   "schemaVersion": 38,
   "style": "dark",
-  "tags": ["ai", "rag", "support", "langgraph"],
+  "tags": ["ai", "rag", "support", "langgraph", "discovery"],
   "time": {
     "from": "now-15m",
     "to": "now"
@@ -288,7 +404,7 @@
     "refresh_intervals": ["5s", "10s", "30s", "1m"]
   },
   "timezone": "browser",
-  "title": "AI Support Service & RAG Monitoring",
+  "title": "AI Support & Product Discovery (RAG & LangGraph)",
   "uid": "ai-support-monitoring",
-  "version": 1
+  "version": 2
 }

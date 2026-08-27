@@ -30,6 +30,19 @@ class ProductApplicationService:
             store_id=command.store_id
         )
         saved = await self.product_repo.save(product)
+        
+        # Publish ProductCreatedEvent to Outbox for Kafka streaming
+        from shared.contracts.events import ProductCreatedEvent
+        await self.event_publisher.publish_product_created(
+            ProductCreatedEvent(
+                product_id=saved.id,
+                name=saved.name,
+                price=saved.price,
+                stock=saved.stock,
+                store_id=saved.store_id
+            )
+        )
+        
         dto = ProductDTO.model_validate(saved)
         dto.is_famous = is_famous
         return dto

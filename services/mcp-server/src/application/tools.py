@@ -280,3 +280,35 @@ def register_tools(mcp, adapter=gateway_adapter):
             if status == "degraded":
                 mcp_circuit_breaker_trips_total.labels(tool_name="cancel_order").inc()
             return result
+
+    @mcp.tool()
+    async def discover_product_bundle(
+        query: str = Field(..., description="Natural language search or setup description (e.g. 'Coding desk setup with monitor and keyboard under $500')"),
+        budget: Optional[float] = Field(default=None, description="Optional maximum price limit"),
+        tenant_id: str = Field(default="store_tech", description="Store tenant context")
+    ) -> Dict[str, Any]:
+        """
+        Use Advanced RAG (HyDE, Query Decomposition, Qdrant payload filtering, and LangGraph Knapsack optimization)
+        to discover matching products and build price-optimized product bundles under budget constraints.
+        """
+        with tracer.start_as_current_span("MCP tool: discover_product_bundle") as span:
+            span.set_attribute("mcp.tool_name", "discover_product_bundle")
+            span.set_attribute("mcp.query", query)
+            if budget:
+                span.set_attribute("mcp.budget", budget)
+            span.set_attribute("tenant.id", tenant_id)
+
+            start = time.perf_counter()
+            logger.info(f"[MCP Tool: discover_product_bundle] query='{query}', budget={budget}, tenant={tenant_id}")
+            result = await adapter.discover_bundle(query=query, budget=budget, tenant_id=tenant_id)
+            duration = time.perf_counter() - start
+            status = result.get("status", "unknown")
+
+            span.set_attribute("mcp.status", status)
+            span.set_attribute("mcp.success", result.get("success", False))
+
+            mcp_tool_calls_total.labels(tool_name="discover_product_bundle", status=status, tenant_id=tenant_id).inc()
+            mcp_tool_duration_seconds.labels(tool_name="discover_product_bundle").observe(duration)
+            if status == "degraded":
+                mcp_circuit_breaker_trips_total.labels(tool_name="discover_product_bundle").inc()
+            return result

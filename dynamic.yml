@@ -80,6 +80,13 @@ http:
         - "strip-mcp"
       service: mcp-service
 
+    discovery-router:
+      rule: "PathPrefix(`/discovery`)"
+      middlewares:
+        - "load-shedding"
+        - "rate-limit"
+        - "strip-discovery"
+      service: discovery-service
 
   middlewares:
     load-shedding:
@@ -136,6 +143,11 @@ http:
       stripPrefix:
         prefixes:
           - "/mcp"
+
+    strip-discovery:
+      stripPrefix:
+        prefixes:
+          - "/discovery"
 
 
   services:
@@ -206,3 +218,12 @@ http:
       loadBalancer:
         servers:
           - url: "http://mcp-service:8008"
+
+    discovery-service:
+      loadBalancer:
+        healthCheck:
+          path: /health
+          interval: 2s
+          timeout: 1s
+        servers:
+          - url: "http://discovery-service:8009"

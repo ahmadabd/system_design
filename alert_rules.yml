@@ -104,3 +104,21 @@ groups:
           summary: "MCP Service Down"
           description: "mcp-service:8008 has been unreachable for more than 1 minute. Autonomous AI agents cannot connect."
 
+      - alert: DiscoveryServiceDown
+        expr: up{job="fastapi", instance=~"discovery-service:8009.*"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Product Discovery & Bundle Service Down"
+          description: "discovery-service:8009 has been unreachable for more than 1 minute. Semantic search and bundle building are offline."
+
+      - alert: DiscoveryHighLatency
+        expr: histogram_quantile(0.95, sum by (le, node_name) (rate(discovery_node_duration_seconds_bucket[2m]))) > 2.5
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High Latency in Discovery LangGraph Node: {{ $labels.node_name }}"
+          description: "LangGraph node {{ $labels.node_name }} has P95 latency exceeding 2.5s."
+

@@ -1421,3 +1421,32 @@ A dedicated Grafana telemetry dashboard (**`Model Context Protocol (MCP) Agent M
 - **Contextual Resource & Prompt Reads**: Monitors resource lookups (`mcp_resource_reads_total`) and prompt workflow generations (`mcp_prompt_requests_total`).
 - **Multi-Tenant Segmentation**: Donut breakdown of tool calls by tenant (`store_tech`, `store_gaming`, `public`).
 - **Live Loki Log Stream**: Real-time JSON log aggregation for `{service_name="mcp-service"}` with linked `trace_id` badges for Jaeger tracing.
+
+---
+
+## 🔍 13. Semantic Product Discovery & Bundle Builder (`discovery-service`)
+
+A dedicated AI microservice on port **`8009`** executing **Advanced RAG (HyDE, Query Decomposition, Qdrant Payload Filtering)** and a **6-node LangGraph State Machine** to find complementary product setups within strict budget ceilings.
+
+### 📐 LangGraph Workflow Architecture
+```mermaid
+graph TD
+    Start([User Request: 'Desk setup under $500']) --> ConstraintParser[1. parse_constraints_node]
+    ConstraintParser --> HyDE_Decomp[2. generate_hyde_and_subqueries_node]
+    HyDE_Decomp --> ParallelSearch[3. qdrant_hybrid_search_node]
+    ParallelSearch --> CrossEncoder[4. cross_encoder_rerank_node]
+    CrossEncoder --> BundleOptimizer[5. bundle_optimizer_node]
+    BundleOptimizer --> Synthesizer[6. synthesize_recommendation_node]
+    Synthesizer --> End([Markdown Bundle Recommendation])
+```
+
+### 🧠 Core Techniques Implemented
+1. **HyDE (Hypothetical Document Embeddings)**: Generates a hypothetical technical spec sheet before embedding to bridge the vocabulary gap between natural language user prompts and catalog metadata.
+2. **Query Decomposition**: Splits compound requests (e.g. *"laptop and monitor"*) into discrete sub-queries for parallel vector execution.
+3. **Qdrant Payload Filtering**: Enforces hard SQL-like constraints (`price <= budget`, `stock >= 1`, `tenant_id == store_tech`) directly inside vector space.
+4. **Knapsack / Greedy Budget Optimizer**: LangGraph optimization node that guarantees the total bundle cost never exceeds the user's budget ceiling.
+5. **Observability & Resilience**:
+   - **Jaeger**: OpenTelemetry spans for every LangGraph node execution (`LangGraph node: bundle_optimizer`, `LangGraph node: qdrant_hybrid_search`).
+   - **Prometheus & Grafana**: Scrapes `/metrics` for `discovery_requests_total`, `discovery_node_duration_seconds`, and `qdrant_search_duration_seconds`.
+   - **Circuit Breakers**: `AsyncCircuitBreaker` fast-fails if the vector store is offline.
+   - **MCP Tool**: Exposed as `discover_product_bundle` for autonomous AI agents.

@@ -233,6 +233,32 @@ class GatewayAdapter:
         except Exception as exc:
             return {"success": False, "status": "error", "message": str(exc)}
 
+    async def discover_bundle(
+        self,
+        query: str,
+        budget: Optional[float] = None,
+        tenant_id: str = "store_tech"
+    ) -> Dict[str, Any]:
+        """Execute semantic product discovery and bundle optimization via LangGraph."""
+        headers = self._build_headers(tenant_id=tenant_id)
+        url = f"{settings.DISCOVERY_SERVICE_URL}/chat"
+        payload = {
+            "query": query,
+            "session_id": f"mcp_disc_{uuid.uuid4().hex[:8]}",
+            "tenant_id": tenant_id,
+            "budget": budget
+        }
+
+        try:
+            response = await self.client.post(url, json=payload, headers=headers)
+            if response.status_code == 200:
+                return {"success": True, "status": "success", "data": response.json()}
+            return {"success": False, "status": "error", "message": response.text}
+        except CircuitBreakerOpenException:
+            return {"success": False, "status": "degraded", "message": "Product discovery service is degraded."}
+        except Exception as exc:
+            return {"success": False, "status": "error", "message": str(exc)}
+
     async def close(self):
         await self.client.close()
 

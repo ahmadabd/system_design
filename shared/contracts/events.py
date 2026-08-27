@@ -75,4 +75,26 @@ class OrderConfirmedEvent(DomainEvent):
     total_price: float
     is_famous: bool = False
 
+class ProductCreatedEvent(DomainEvent):
+    event_type: str = "ProductCreated"
+    product_id: int
+    name: str
+    price: float
+    stock: int
+    store_id: int
+
+class ProductUpdatedEvent(DomainEvent):
+    event_type: str = "ProductUpdated"
+    product_id: int
+    name: str
+    price: float
+    stock: int
+    store_id: int
+
+class ProductDeletedEvent(DomainEvent):
+    event_type: str = "ProductDeleted"
+    product_id: int
+    store_id: int
+
+
 

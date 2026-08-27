@@ -18,6 +18,7 @@ class MCPSettings(BaseSettings):
     ORDER_SERVICE_URL: str = os.getenv("ORDER_SERVICE_URL", "http://localhost/orders")
     PAYMENT_SERVICE_URL: str = os.getenv("PAYMENT_SERVICE_URL", "http://localhost/payments")
     REPORTING_SERVICE_URL: str = os.getenv("REPORTING_SERVICE_URL", "http://localhost/reporting")
+    DISCOVERY_SERVICE_URL: str = os.getenv("DISCOVERY_SERVICE_URL", "http://localhost/discovery")
 
     # Multi-tenancy
     DEFAULT_TENANT: str = "store_tech"

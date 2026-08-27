@@ -62,7 +62,22 @@ class KafkaManager:
                 await self.producer.start()
                 logger.info("Successfully connected to Kafka and started Producer!")
                 try:
-                    await self.ensure_topics_exist(["order.created", "order.confirmed", "store.registered"], num_partitions=8)
+                    await self.ensure_topics_exist([
+                        "order.created",
+                        "order.confirmed",
+                        "order.created.deadletter",
+                        "inventory.reserved",
+                        "inventory.failed",
+                        "payment.session_created",
+                        "payment.succeeded",
+                        "payment.failed",
+                        "product.created",
+                        "product.updated",
+                        "product.deleted",
+                        "store.registered",
+                        "user.registered",
+                        "webhook.deadletter"
+                    ], num_partitions=8)
                 except Exception as topics_err:
                     logger.warning(f"Failed to ensure topics exist during startup: {topics_err}")
                 return
@@ -133,12 +148,19 @@ class KafkaManager:
                 except (ValueError, TypeError):
                     store_id_int = hash(str(store_id))
                 
-                if is_famous:
-                    # Partitions 0-3 are dedicated to famous stores
-                    partition = store_id_int % 4
-                else:
-                    # Partitions 4-7 are shared for small/non-famous stores
-                    partition = 4 + (store_id_int % 4)
+                # Check available partitions for topic if known
+                known_partitions = self.producer.partitions_for(topic) if hasattr(self.producer, "partitions_for") else None
+                if known_partitions and len(known_partitions) >= 8:
+                    if is_famous:
+                        # Partitions 0-3 are dedicated to famous stores
+                        partition = store_id_int % 4
+                    else:
+                        # Partitions 4-7 are shared for small/non-famous stores
+                        partition = 4 + (store_id_int % 4)
+                elif known_partitions and len(known_partitions) > 1:
+                    partition = store_id_int % len(known_partitions)
+                elif known_partitions and len(known_partitions) == 1:
+                    partition = 0
             
             key = str(event_data.get("store_id") or event_data.get("order_id") or event_data.get("user_id") or "").encode("utf-8") or None
             
@@ -181,7 +203,14 @@ class KafkaManager:
                     for k, v in headers_dict.items()
                 ]
                 
-                await self.producer.send_and_wait(topic, value=event_data, key=key, partition=partition, headers=kafka_headers)
+                try:
+                    await self.producer.send_and_wait(topic, value=event_data, key=key, partition=partition, headers=kafka_headers)
+                except Exception as send_err:
+                    if partition is not None:
+                        logger.warning(f"Explicit partition {partition} failed for '{topic}' ({send_err}). Retrying with default partitioner...")
+                        await self.producer.send_and_wait(topic, value=event_data, key=key, partition=None, headers=kafka_headers)
+                    else:
+                        raise
                 if messaging_kafka_messages_total:
                     messaging_kafka_messages_total.labels(topic=topic, operation="send").inc()
                 logger.info(f"Published message to Kafka topic '{topic}' with key '{key.decode() if key else 'None'}' on partition {partition}")
