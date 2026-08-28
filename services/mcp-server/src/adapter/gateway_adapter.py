@@ -283,6 +283,32 @@ class GatewayAdapter:
         except Exception as exc:
             return {"success": False, "status": "error", "message": str(exc)}
 
+    async def query_graph_rag(
+        self,
+        query: str,
+        search_mode: str = "auto",
+        tenant_id: str = "store_tech"
+    ) -> Dict[str, Any]:
+        """Execute Microsoft GraphRAG inquiry across supplier, component, and defect knowledge graphs."""
+        headers = self._build_headers(tenant_id=tenant_id)
+        url = f"{settings.GRAPHRAG_SERVICE_URL}/query"
+        payload = {
+            "query": query,
+            "session_id": f"mcp_graph_{uuid.uuid4().hex[:8]}",
+            "tenant_id": tenant_id,
+            "search_mode": search_mode
+        }
+
+        try:
+            response = await self.client.post(url, json=payload, headers=headers)
+            if response.status_code == 200:
+                return {"success": True, "status": "success", "data": response.json()}
+            return {"success": False, "status": "error", "message": response.text}
+        except CircuitBreakerOpenException:
+            return {"success": False, "status": "degraded", "message": "Knowledge Graph RAG service is degraded."}
+        except Exception as exc:
+            return {"success": False, "status": "error", "message": str(exc)}
+
     async def close(self):
         await self.client.close()
 

@@ -108,6 +108,18 @@ def mock_gateway_adapter():
         }
     })
 
+    # Mock query_graph_rag
+    adapter.query_graph_rag = AsyncMock(return_value={
+        "success": True,
+        "status": "success",
+        "data": {
+            "query": "Why is the Gaming Laptop overheating?",
+            "search_mode": "local_multihop",
+            "reasoning_hops": ["[Laptop] -> [Cooler] -> [Defect]"],
+            "final_markdown_report": "### 🕸️ GraphRAG Multi-Hop Root-Cause Investigation"
+        }
+    })
+
     return adapter
 
 
@@ -339,5 +351,24 @@ async def test_mcp_merchant_copilot_query_tool(mcp_server, mock_gateway_adapter)
     assert data["result"]["data"]["intent"] == "structured_analytics"
     mock_gateway_adapter.query_merchant_copilot.assert_called_once_with(
         query="Show total revenue for store_tech",
+        tenant_id="store_tech"
+    )
+
+
+@pytest.mark.asyncio
+async def test_mcp_graph_rag_query_tool(mcp_server, mock_gateway_adapter):
+    """Test GraphRAG tool execution."""
+    result = await mcp_server.call_tool("graph_rag_query", {
+        "query": "Why is the Gaming Laptop overheating?",
+        "search_mode": "local_multihop",
+        "tenant_id": "store_tech"
+    })
+    assert not result.is_error
+    data = result.structured_content
+    assert data["result"]["success"] is True
+    assert "GraphRAG" in data["result"]["data"]["final_markdown_report"]
+    mock_gateway_adapter.query_graph_rag.assert_called_once_with(
+        query="Why is the Gaming Laptop overheating?",
+        search_mode="local_multihop",
         tenant_id="store_tech"
     )

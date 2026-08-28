@@ -77,6 +77,7 @@ graph TD
     Router -->|"/mcp/*"| MCPServ
     Router -->|"/discovery/*"| DiscoveryServ
     Router -->|"/copilot/*"| CopilotServ
+    Router -->|"/graphrag/*"| GraphRAGServ
 
     %% Database, OLAP & Vector Connections
     UserServ -->|"db_breaker"| UserDB
@@ -89,6 +90,8 @@ graph TD
     DiscoveryServ -->|"qdrant_breaker"| QdrantDB
     CopilotServ -->|"qdrant_breaker"| QdrantDB
     CopilotServ -->|"MicroBatcher Insert"| ClickHouseDB
+    GraphRAGServ -->|"qdrant_breaker"| QdrantDB
+    GraphRAGServ -->|"In-Memory Graph"| NetworkXGraph[("NetworkX MultiDiGraph")]
 
 
     %% Idempotency Cache Connections
@@ -115,6 +118,7 @@ graph TD
     Kafka -.->|"Event Subscription / Inbox Pattern"| WebhookServ
     Kafka -.->|"Real-Time Embedding Sync"| DiscoveryServ
     Kafka -.->|"Micro-Batcher Stream Ingestion"| CopilotServ
+    Kafka -.->|"Dynamic Entity Hydration"| GraphRAGServ
 
     %% Webhook Outbound Connection
     WebhookServ -->|"POST Resilient Webhook Dispatch"| PartnerWebhook
@@ -130,6 +134,7 @@ graph TD
     MCPServ -->|"OTel Traces & Metrics"| OTel
     DiscoveryServ -->|"OTel Traces & Metrics"| OTel
     CopilotServ -->|"OTel Traces & Metrics"| OTel
+    GraphRAGServ -->|"OTel Traces & Metrics"| OTel
     Traefik -->|"OTel Traces & Metrics"| OTel
 
     OTel -->|"Traces"| JG
@@ -370,7 +375,19 @@ system_design/
 │   │   ├── Dockerfile
 │   │   ├── requirements.txt
 │   │   └── src/
-│   └── mcp-server/
+│   ├── mcp-server/
+│   │   ├── Dockerfile
+│   │   ├── requirements.txt
+│   │   └── src/
+│   ├── discovery-service/
+│   │   ├── Dockerfile
+│   │   ├── requirements.txt
+│   │   └── src/
+│   ├── merchant-copilot-service/
+│   │   ├── Dockerfile
+│   │   ├── requirements.txt
+│   │   └── src/
+│   └── knowledge-graph-rag-service/
 │       ├── Dockerfile
 │       ├── requirements.txt
 │       └── src/
@@ -693,10 +710,15 @@ Fill in the custom database credentials, port configurations, and Redis credenti
 | **MCP Server (FastMCP / SSE)** | `8008` | `http://localhost/mcp/sse` or `http://localhost:8008/sse` |
 | **Discovery Service OpenAPI Docs**| `8009` | `http://localhost/discovery/docs` or `http://localhost:8009/docs` |
 | **Merchant Copilot OpenAPI Docs** | `8010` | `http://localhost/copilot/docs` or `http://localhost:8010/docs` |
+| **Knowledge Graph RAG Service**   | `8011` | `http://localhost/graphrag/health` or `http://localhost:8011/health` |
+| **Knowledge Graph RAG OpenAPI Docs** | `8011` | `http://localhost/graphrag/docs` or `http://localhost:8011/docs` |
 | **Qdrant Vector Database Web UI**| `6333` | `http://localhost:6333/dashboard` |
 | **ClickHouse Web Client (Play UI)**| `8123` | `http://localhost:8123/play` |
 | **Jaeger Distributed Tracing** | `16686` | `http://localhost:16686/` |
 | **Grafana Telemetry Dashboard**| `3000` | `http://localhost:3000/` |
+| **Grafana GraphRAG Monitoring** | `3000` | `http://localhost:3000/d/graphrag-monitoring/knowledge-graph-rag-graphrag-monitoring` |
+| **Grafana Backend Error Inbox** | `3000` | `http://localhost:3000/d/logs-traces/backend-logs-error-tracing` |
+| **Grafana MCP Agent Monitoring** | `3000` | `http://localhost:3000/d/mcp-monitoring/model-context-protocol-mcp-ai-agent-gateway-monitoring` |
 | **Prometheus Metrics Engine** | `9090` | `http://localhost:9090/` |
 | **Alertmanager Controller** | `9093` | `http://localhost:9093/` |
 
@@ -1011,6 +1033,14 @@ All service interactions are routed through the Traefik Gateway on port `80`.
 | **Discovery Service** | `GET` | `/discovery/health`                      | `:8009/health`                          | None                                    | No  |
 | **Merchant Copilot**  | `POST`| `/copilot/chat`                          | `:8010/chat`                            | `{"query", "session_id", "tenant_id"}`  | No  |
 | **Merchant Copilot**  | `GET` | `/copilot/health`                        | `:8010/health`                          | None                                    | No  |
+| **Knowledge Graph RAG** | `POST` | `/graphrag/query`                     | `:8011/query`                           | `{"query", "session_id", "search_mode"}` | No |
+| **Knowledge Graph RAG** | `GET`  | `/graphrag/subgraph`                  | `:8011/subgraph`                        | `?seeds=prod_gaming_laptop_pro&hops=2` | No  |
+| **Knowledge Graph RAG** | `GET`  | `/graphrag/communities`               | `:8011/communities`                     | None                                    | No  |
+| **Knowledge Graph RAG** | `GET`  | `/graphrag/stats`                     | `:8011/stats`                           | None                                    | No  |
+| **Knowledge Graph RAG** | `GET`  | `/graphrag/nodes/{node_id}`           | `:8011/nodes/{node_id}`                 | None (Path Parameter)                   | No  |
+| **Knowledge Graph RAG** | `POST` | `/graphrag/nodes`                     | `:8011/nodes`                           | `{"id", "name", "type", "description"}` | No  |
+| **Knowledge Graph RAG** | `POST` | `/graphrag/edges`                     | `:8011/edges`                           | `{"source", "target", "relation"}`      | No  |
+| **Knowledge Graph RAG** | `GET`  | `/graphrag/health`                    | `:8011/health`                          | None                                    | No  |
 
 ---
 
@@ -1287,6 +1317,69 @@ All service interactions are routed through the Traefik Gateway on port `80`.
   curl -i -N http://localhost/mcp/sse
   ```
 
+##### 11. Knowledge Graph RAG (GraphRAG) Service Endpoints (`knowledge-graph-rag-service:8011`)
+* **Health & Readiness Check**:
+  ```bash
+  curl -s http://localhost/graphrag/health
+  ```
+* **Real-Time Graph Stats (Nodes, Edges, Communities)**:
+  ```bash
+  curl -s http://localhost/graphrag/stats
+  ```
+* **Hierarchical Community Clusters (Louvain / Leiden)**:
+  ```bash
+  curl -s http://localhost/graphrag/communities
+  ```
+* **Interactive Mermaid Subgraph Visualization**:
+  ```bash
+  curl -s "http://localhost/graphrag/subgraph?seeds=prod_gaming_laptop_pro&hops=2"
+  ```
+* **Local Multi-Hop Root-Cause Investigation**:
+  ```bash
+  curl -s -X POST http://localhost/graphrag/query \
+    -H "Content-Type: application/json" \
+    -H "X-Tenant-ID: store_tech" \
+    -d '{
+      "query": "Why is the Gaming Laptop Pro overheating and which supplier is responsible for the defect?"
+    }'
+  ```
+* **Global Platform Quality & Supplier Risk Map-Reduce**:
+  ```bash
+  curl -s -X POST http://localhost/graphrag/query \
+    -H "Content-Type: application/json" \
+    -H "X-Tenant-ID: store_tech" \
+    -d '{
+      "query": "Give me a high-level summary of all supplier defects across all products"
+    }'
+  ```
+* **Dynamically Add / Ingest a New Entity Node**:
+  ```bash
+  curl -s -X POST http://localhost/graphrag/nodes \
+    -H "Content-Type: application/json" \
+    -d '{
+      "id": "supp_samsung_vietnam",
+      "name": "Samsung Electronics (Thai Nguyen, Vietnam)",
+      "type": "Supplier",
+      "description": "Tier-1 audio transducer and battery assembly facility.",
+      "tenant_id": "store_tech"
+    }'
+  ```
+* **Dynamically Link Two Entities with a Directed Edge**:
+  ```bash
+  curl -s -X POST http://localhost/graphrag/edges \
+    -H "Content-Type: application/json" \
+    -d '{
+      "source": "prod_20",
+      "target": "supp_samsung_vietnam",
+      "relation": "SUPPLIED_BY",
+      "description": "Assembled and QC certified at Thai Nguyen factory."
+    }'
+  ```
+* **Inspect Specific Node in Knowledge Graph**:
+  ```bash
+  curl -s http://localhost/graphrag/nodes/prod_20
+  ```
+
 ---
 
 #### C. Real-Time Kafka Topic & Message Inspection
@@ -1543,6 +1636,7 @@ The platform includes a dedicated **Model Context Protocol (MCP)** microservice 
 | `cancel_order` | `order_id`, `reason`, `tenant_id` | Triggers Saga compensation (inventory release & payment refund). |
 | `discover_product_bundle` | `query`, `budget`, `tenant_id` | Semantic bundle builder and price optimizer under budget constraints. |
 | `merchant_copilot_query` | `query`, `tenant_id` | Hybrid Text-to-SQL (ClickHouse) + Vector Policy RAG (Qdrant). |
+| `graph_rag_query` | `query`, `search_mode`, `tenant_id` | Microsoft GraphRAG: Multi-hop supplier/defect reasoning and Louvain community detection. |
 
 #### 2. Contextual Resources (`resources/list` & `resources/read`)
 - `ecommerce://policies/returns`: Official return, cancellation, and refund policies.
@@ -1796,3 +1890,149 @@ curl -s -X POST http://localhost/copilot/chat \
 PYTHONPATH=services/merchant-copilot-service ./.venv/bin/pytest tests/test_merchant_copilot_service.py -v
 ```
 All 6 tests verify AST security parsing, micro-batching mechanics, Qdrant policy retrieval, LLM heuristics, LangGraph workflow execution, and FastAPI endpoints.
+
+---
+
+## 🕸️ 15. Knowledge Graph RAG (`knowledge-graph-rag-service:8011`)
+
+The **Knowledge Graph RAG Service** implements the **Microsoft GraphRAG Paradigm** to solve the fundamental limitation of standard Vector RAG: **multi-hop relational reasoning and holistic global question answering**.
+
+### 🌟 Key Architecture & Pillars
+
+```
+                                  ┌────────────────────────────────────────────────────────┐
+                                  │             Merchant / Executive Business Query        │
+                                  │ "Why are GPU returns spiking and which supplier is it?"│
+                                  └──────────────────────────┬─────────────────────────────┘
+                                                             │
+                                                             ▼
+                                  ┌────────────────────────────────────────────────────────┐
+                                  │               1. graph_query_classifier                │
+                                  │       (local_multihop  |  global_community_search)     │
+                                  └──────────┬─────────────────────────────────┬───────────┘
+                                             │                                 │
+                     [Local Entity Search]   │                                 │ [Global Holistic Search]
+                                             ▼                                 ▼
+                     ┌───────────────────────────────┐ ┌─────────────────────────────────────────┐
+                     │   2. entity_extractor_node    │ │    4. global_community_reducer_node     │
+                     │  (Extract seed nodes from Q)  │ │   (Map-Reduce over Leiden Clusters)     │
+                     └───────────────┬───────────────┘ └───────────────────┬─────────────────────┘
+                                     │                                     │
+                                     ▼                                     │
+                     ┌───────────────────────────────┐                     │
+                     │ 3. local_subgraph_traverser   │                     │
+                     │ (2-3 Hop Relational Traversal)│                     │
+                     └───────────────┬───────────────┘                     │
+                                     │                                     │
+                                     └─────────────────┬───────────────────┘
+                                                       │
+                                                       ▼
+                                     ┌───────────────────────────────────┐
+                                     │ 5. graph_reasoning_synthesizer    │
+                                     │ (Multi-hop synthesis + Subgraph)  │
+                                     └─────────────────┬─────────────────┘
+                                                       │
+                                                       ▼
+                                     ┌───────────────────────────────────┐
+                                     │      Executive Root-Cause Report  │
+                                     │   + Interactive Subgraph Visual   │
+                                     └───────────────────────────────────┘
+```
+
+1. **Entity-Relation Knowledge Graph Engine**:
+   - Directed typed multigraph implemented in `NetworkX` with node types (`Product`, `Supplier`, `Component`, `Defect`, `Batch`, `Warehouse`, `Review`, `Store`) and typed relationships (`SUPPLIED_BY`, `CONTAINS_COMPONENT`, `REPORTED_DEFECT`, `SHIPPED_FROM`, `CAUSED_RETURN_IN`, `PRODUCED_IN_BATCH`, `SOLD_BY`).
+   - Integrated with `Qdrant` collection `knowledge_graph_entities` for semantic vector entity linking.
+
+2. **Hierarchical Community Detection (Leiden / Louvain Algorithm)**:
+   - Partitions the global knowledge graph into topologically dense communities representing incident clusters and supplier failure groups.
+   - Pre-computes and caches hierarchical executive summaries and risk ratings for each cluster.
+
+3. **Dual-Mode Graph Retrieval (Local vs Global Search)**:
+   - **Local Multi-Hop Search**: Starts from named entities in the query, searches $k$-hop neighbor subgraphs, and stitches relational evidence chains together (`Laptop` $\rightarrow$ `Vapor Chamber` $\rightarrow$ `CoolMaster Shenzhen` $\rightarrow$ `Batch #2026-B` $\rightarrow$ `Thermal Throttling Defect`).
+   - **Global Map-Reduce Search**: Dispatches parallel map tasks across all community clusters, extracts relevant key points, and synthesizes a global executive risk briefing.
+
+4. **Dynamic Stream-Based & REST Knowledge Ingestion**:
+   - **Kafka Stream Ingestion**: Ingests real-time events (`product.*`, `inventory.failed`, `order.*`) to dynamically add nodes and edges to the live graph.
+   - **Dynamic REST Ingestion**: Exposes `POST /graphrag/nodes` and `POST /graphrag/edges` to allow ERPs, PLM systems, and external pipelines to insert nodes/relationships with automatic Qdrant vector indexing and Louvain community updates.
+
+5. **Automated Pytest Test Suite**:
+   ```bash
+   PYTHONPATH=services/knowledge-graph-rag-service ./.venv/bin/pytest tests/test_knowledge_graph_rag_service.py -v
+   ```
+   All 7 tests verify graph store operations, pathfinding, community clustering, mode classification, Qdrant linking, LangGraph workflow execution, and FastAPI endpoints.
+
+### 🧪 Live GraphRAG Curl Testing & Verification
+
+#### 1. Local Multi-Hop Root-Cause Investigation Query
+```bash
+curl -s -X POST http://localhost/graphrag/query \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-ID: store_tech" \
+  -d '{
+    "query": "Why is the Gaming Laptop Pro overheating and which supplier is responsible for the defect?"
+  }'
+```
+**Sample Response**:
+```json
+{
+  "session_id": "graph_8e94a102",
+  "query": "Why is the Gaming Laptop Pro overheating and which supplier is responsible for the defect?",
+  "tenant_id": "store_tech",
+  "search_mode": "local_multihop",
+  "nodes_traversed_count": 20,
+  "edges_traversed_count": 38,
+  "reasoning_hops": [
+    "**[Gaming Laptop Pro (32GB RAM, RTX 4080)]** ──`CONTAINS_COMPONENT`──► **[Ultra-Thin Dual Vapor Chamber Heatsink]** (Laptop thermal dissipation relies on the CoolMaster dual vapor chamber.)",
+    "**[Ultra-Thin Dual Vapor Chamber Heatsink]** ──`SUPPLIED_BY`──► **[CoolMaster Thermal Solutions Ltd (Shenzhen)]** (Vapor chamber heatsink manufactured and assembled by CoolMaster Shenzhen.)",
+    "**[Ultra-Thin Dual Vapor Chamber Heatsink]** ──`PRODUCED_IN_BATCH`──► **[Production Batch #2026-B Vapor Chambers]** (Cooler unit belongs to the Q1 2026 Batch #2026-B production run.)",
+    "**[Production Batch #2026-B Vapor Chambers]** ──`REPORTED_DEFECT`──► **[Defect #DEF-8802: Micro-Cavity Seal Leakage & Thermal Throttling]** (Batch #2026-B exhibits 14.8% micro-cavity solder seal failure.)",
+    "**[Defect #DEF-8802: Micro-Cavity Seal Leakage & Thermal Throttling]** ──`CAUSED_RETURN_IN`──► **[Customer Review #REV-901: Instant thermal shutdown in Premiere Pro]** (Thermal throttling directly prompted customer return Review #REV-901.)"
+  ],
+  "final_markdown_report": "### 🕸️ GraphRAG Multi-Hop Root-Cause Investigation\n\n**Query**: *\"Why is the Gaming Laptop Pro overheating and which supplier is responsible for the defect?\"*\n\n#### 🔍 Causal Relational Chain (Multi-Hop Traversal)\n1. **[Gaming Laptop Pro]** ──`CONTAINS_COMPONENT`──► **[Ultra-Thin Dual Vapor Chamber Heatsink]**\n2. **[Ultra-Thin Dual Vapor Chamber Heatsink]** ──`SUPPLIED_BY`──► **[CoolMaster Thermal Solutions Ltd (Shenzhen)]**\n3. **[Ultra-Thin Dual Vapor Chamber Heatsink]** ──`PRODUCED_IN_BATCH`──► **[Production Batch #2026-B Vapor Chambers]**\n4. **[Production Batch #2026-B Vapor Chambers]** ──`REPORTED_DEFECT`──► **[Defect #DEF-8802: Micro-Cavity Seal Leakage & Thermal Throttling]**\n\n#### 🛠️ Recommended Action Items\n1. **Supplier Audit**: Issue a Corrective Action Request (CAR) to `CoolMaster Thermal Solutions Ltd (Shenzhen)` regarding manufacturing defect `Defect #DEF-8802: Micro-Cavity Seal Leakage`.\n2. **Inventory Quarantine**: Hold remaining stock associated with `Production Batch #2026-B Vapor Chambers` in fulfillment hubs.\n3. **Customer Remediation**: Proactively contact customers with open tickets offering expedited warranty replacements."
+}
+```
+
+#### 2. Global Community Map-Reduce Executive Briefing
+```bash
+curl -s -X POST http://localhost/graphrag/query \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-ID: store_tech" \
+  -d '{
+    "query": "Give me a high-level summary of all supplier defects across all products"
+  }'
+```
+**Sample Response Highlights**:
+- Synthesizes risk matrix across **all 4 Louvain Community Clusters**:
+  - `Community #4 [CRITICAL]`: CoolMaster Shenzhen vapor chamber micro-cavity solder leaks.
+  - `Community #3 [CRITICAL]`: Neutrik XLR studio audio cable missing ground shell bridge Pin 1.
+  - `Community #2 [CRITICAL]`: Great Lakes polymer lumbar bracket hydrolysis stress fractures under load.
+  - `Community #1 [MEDIUM]`: TSMC / NVIDIA 4N GPU mobile die fabrication.
+
+#### 3. Real-Time Topology & Subgraph Inspection
+```bash
+# A. Real-Time Graph Stats (Nodes, Edges, Communities)
+curl -s http://localhost/graphrag/stats
+
+# B. View Detected Louvain Community Clusters & Severity Ratings
+curl -s http://localhost/graphrag/communities
+
+# C. Extract 2-Hop Subgraph with Mermaid Diagram
+curl -s "http://localhost/graphrag/subgraph?seeds=prod_gaming_laptop_pro&hops=2"
+```
+
+---
+
+### 🔍 16. Distributed Observability & Jaeger Tracing for GraphRAG
+
+1. **Jaeger Distributed Traces**:
+   - Open **[http://localhost:16686/](http://localhost:16686/)** and search service `knowledge-graph-rag-service` or `traefik`.
+   - Inspect the unified execution trace:
+     - `traefik`: Ingress routing span (`/graphrag/query`)
+     - `knowledge-graph-rag-service`: Server request span (`POST /query`)
+     - `LangGraph node: graph_query_classifier`: Search mode routing (`local_multihop` vs `global_community`)
+     - `LangGraph node: entity_extractor`: Discovers seed nodes (`Qdrant: search_entities`)
+     - `LangGraph node: local_subgraph_traverser`: 2-hop relational pathfinding (`GraphStore: extract_subgraph`)
+     - `LangGraph node: graph_reasoning_synthesizer`: Multi-hop synthesis report generation
+
+2. **Grafana GraphRAG Dashboard**:
+   - Open **[http://localhost:3000/d/graphrag-monitoring/knowledge-graph-rag-graphrag-monitoring](http://localhost:3000/d/graphrag-monitoring/knowledge-graph-rag-graphrag-monitoring)** to visualize query rates, node latencies, entity distributions, and live log streams with direct trace links.

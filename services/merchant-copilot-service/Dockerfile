@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install python dependencies
 COPY services/merchant-copilot-service/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+RUN python -c "from fastembed import TextEmbedding; TextEmbedding(model_name='BAAI/bge-small-en-v1.5')" || true
 
 # Copy shared library code and service code
 COPY shared /app/shared

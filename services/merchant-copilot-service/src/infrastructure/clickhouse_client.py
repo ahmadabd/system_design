@@ -1,6 +1,7 @@
 import logging
 from typing import List, Dict, Any, Optional
 import clickhouse_connect
+from opentelemetry import trace
 from src.infrastructure.config import settings
 
 logger = logging.getLogger("ClickHouseClient")

@@ -344,3 +344,37 @@ def register_tools(mcp, adapter=gateway_adapter):
             if status == "degraded":
                 mcp_circuit_breaker_trips_total.labels(tool_name="merchant_copilot_query").inc()
             return result
+
+    @mcp.tool(
+        name="graph_rag_query",
+        description="Execute Microsoft GraphRAG inquiry: multi-hop causal reasoning across products, components, suppliers, batches, and defects with Louvain community detection."
+    )
+    async def graph_rag_query(
+        query: str = Field(..., description="Natural language root-cause, defect, or supplier question (e.g. 'Why is the laptop overheating and which supplier is it?')"),
+        search_mode: str = Field(default="auto", description="Search mode: 'auto', 'local_multihop', 'global_community'"),
+        tenant_id: str = Field(default="store_tech", description="Store tenant context")
+    ) -> Dict[str, Any]:
+        """
+        Execute Graph-Augmented RAG (GraphRAG) query.
+        Traverses multi-hop subgraphs or aggregates hierarchical community summaries to explain root causes.
+        """
+        with tracer.start_as_current_span("MCP tool: graph_rag_query") as span:
+            span.set_attribute("mcp.tool_name", "graph_rag_query")
+            span.set_attribute("mcp.query", query)
+            span.set_attribute("mcp.search_mode", search_mode)
+            span.set_attribute("tenant.id", tenant_id)
+
+            start = time.perf_counter()
+            logger.info(f"[MCP Tool: graph_rag_query] query='{query}', mode={search_mode}, tenant={tenant_id}")
+            result = await adapter.query_graph_rag(query=query, search_mode=search_mode, tenant_id=tenant_id)
+            duration = time.perf_counter() - start
+            status = result.get("status", "unknown")
+
+            span.set_attribute("mcp.status", status)
+            span.set_attribute("mcp.success", result.get("success", False))
+
+            mcp_tool_calls_total.labels(tool_name="graph_rag_query", status=status, tenant_id=tenant_id).inc()
+            mcp_tool_duration_seconds.labels(tool_name="graph_rag_query").observe(duration)
+            if status == "degraded":
+                mcp_circuit_breaker_trips_total.labels(tool_name="graph_rag_query").inc()
+            return result

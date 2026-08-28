@@ -96,6 +96,14 @@ http:
         - "strip-copilot"
       service: merchant-copilot-service
 
+    graphrag-router:
+      rule: "PathPrefix(`/graphrag`)"
+      middlewares:
+        - "load-shedding"
+        - "rate-limit"
+        - "strip-graphrag"
+      service: knowledge-graph-rag-service
+
   middlewares:
     load-shedding:
       inFlightReq:
@@ -161,6 +169,11 @@ http:
       stripPrefix:
         prefixes:
           - "/copilot"
+
+    strip-graphrag:
+      stripPrefix:
+        prefixes:
+          - "/graphrag"
 
 
   services:
@@ -249,3 +262,12 @@ http:
           timeout: 1s
         servers:
           - url: "http://merchant-copilot-service:8010"
+
+    knowledge-graph-rag-service:
+      loadBalancer:
+        healthCheck:
+          path: /health
+          interval: 2s
+          timeout: 1s
+        servers:
+          - url: "http://knowledge-graph-rag-service:8011"

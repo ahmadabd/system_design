@@ -402,6 +402,28 @@ services:
     networks:
       - ecommerce-network
 
+  knowledge-graph-rag-service:
+    build:
+      context: .
+      dockerfile: services/knowledge-graph-rag-service/Dockerfile
+    container_name: knowledge-graph-rag-service
+    restart: unless-stopped
+    ports:
+      - "${GRAPHRAG_SERVICE_PORT:-8011}:${GRAPHRAG_SERVICE_PORT:-8011}"
+    environment:
+      - PORT=${GRAPHRAG_SERVICE_PORT:-8011}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - SERVICE_NAME=knowledge-graph-rag-service
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS:-kafka:29092}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+    depends_on:
+      - qdrant
+      - kafka
+    networks:
+      - ecommerce-network
+
   traefik-master:
     image: traefik:v3.7
     container_name: traefik-master

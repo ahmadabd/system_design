@@ -11,6 +11,7 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from prometheus_fastapi_instrumentator import Instrumentator
 
+
 class CustomJsonFormatter(jsonlogger.JsonFormatter):
     def add_fields(self, log_record, record, message_dict):
         super().add_fields(log_record, record, message_dict)
@@ -18,9 +19,10 @@ class CustomJsonFormatter(jsonlogger.JsonFormatter):
         if current_span and current_span.get_span_context().is_valid:
             log_record['trace_id'] = format(current_span.get_span_context().trace_id, '032x')
             log_record['span_id'] = format(current_span.get_span_context().span_id, '016x')
-        log_record['service_name'] = os.getenv("SERVICE_NAME", "merchant-copilot-service")
+        log_record['service_name'] = os.getenv("SERVICE_NAME", "knowledge-graph-rag-service")
         log_record['severity'] = record.levelname
         log_record['logger'] = record.name
+
 
 def setup_logging():
     logHandler = logging.StreamHandler()
@@ -33,13 +35,15 @@ def setup_logging():
     root_logger.addHandler(logHandler)
     root_logger.setLevel(logging.INFO)
 
+
 from opentelemetry._logs import set_logger_provider
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
 
-def setup_copilot_observability(service_name: str = "merchant-copilot-service") -> None:
-    """Sets up OpenTelemetry Tracer, HTTPX instrumentation, and OTLP Logging to Loki for Merchant Copilot"""
+
+def setup_graphrag_observability(service_name: str = "knowledge-graph-rag-service") -> None:
+    """Sets up OpenTelemetry Tracer, HTTPX instrumentation, and OTLP Logging to Loki for GraphRAG"""
     setup_logging()
     logger = logging.getLogger("Observability")
     endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317")
@@ -56,7 +60,7 @@ def setup_copilot_observability(service_name: str = "merchant-copilot-service") 
         provider.add_span_processor(span_processor)
         trace.set_tracer_provider(provider)
         HTTPXClientInstrumentor().instrument()
-        logger.info("OpenTelemetry TracerProvider and HTTPX instrumentation registered successfully for Merchant Copilot.")
+        logger.info("OpenTelemetry TracerProvider and HTTPX instrumentation registered successfully for GraphRAG.")
     except Exception as e:
         logger.warning(f"Could not connect to OTel exporter ({e}). Continuing in local trace mode.")
 
@@ -73,9 +77,10 @@ def setup_copilot_observability(service_name: str = "merchant-copilot-service") 
             ul = logging.getLogger(uvicorn_name)
             ul.addHandler(otel_handler)
             ul.propagate = True
-        logger.info("OpenTelemetry OTLP Logging initialized successfully for Merchant Copilot -> Loki.")
+        logger.info("OpenTelemetry OTLP Logging initialized successfully for GraphRAG -> Loki.")
     except Exception as e:
-        logger.warning(f"Failed to initialize OTel Logging for Merchant Copilot: {e}")
+        logger.warning(f"Failed to initialize OTel Logging for GraphRAG: {e}")
+
 
 def instrument_app(app: FastAPI):
     """Instruments FastAPI and Prometheus endpoints"""
