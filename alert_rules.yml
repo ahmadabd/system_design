@@ -167,4 +167,22 @@ groups:
           summary: "High Latency in GraphRAG LangGraph Node: {{ $labels.node_name }}"
           description: "GraphRAG LangGraph node {{ $labels.node_name }} has P95 latency exceeding 2.5s."
 
+      - alert: DisputeServiceDown
+        expr: up{job="fastapi", instance=~"dispute-resolution-service:8012.*"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Dispute Resolution Service Down"
+          description: "dispute-resolution-service:8012 has been unreachable for more than 1 minute. Multi-agent claims arbitration is offline."
+
+      - alert: DisputeHighHumanEscalationRate
+        expr: (sum(rate(dispute_human_escalations_total[5m])) / (sum(rate(dispute_claims_total[5m])) > 0)) > 0.6
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High Dispute Human Escalation Rate"
+          description: "Over 60% of customer claims are exceeding the auto-settlement threshold and escalating to human compliance."
+
 

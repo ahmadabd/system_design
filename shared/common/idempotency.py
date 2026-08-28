@@ -48,7 +48,7 @@ class IdempotencyManager:
             "status_code": status_code,
             "body": body
         }
-        await self.redis.set(key, json.dumps(payload), ex=ttl)
+        await self.redis.set(key, json.dumps(payload, default=str), ex=ttl)
 
     async def unlock(self, key: str) -> None:
         """Deletes key to allow retry if an operation failed during execution"""
@@ -62,11 +62,15 @@ class IdempotencyManager:
 def _serialize(data: Any) -> Any:
     """Helper to convert Pydantic models, dicts, lists, and primitives into JSON-serializable structures"""
     if isinstance(data, BaseModel):
-        return data.model_dump()
+        return data.model_dump(mode="json")
     elif isinstance(data, list):
         return [_serialize(item) for item in data]
     elif isinstance(data, dict):
         return {k: _serialize(v) for k, v in data.items()}
+    elif hasattr(data, "value"):
+        return data.value
+    elif hasattr(data, "isoformat"):
+        return data.isoformat()
     return data
 
 

@@ -315,6 +315,10 @@ services:
       - ORDER_SERVICE_URL=http://order-service:8003
       - PAYMENT_SERVICE_URL=http://payment-service:8004
       - REPORTING_SERVICE_URL=http://reporting-service:8005
+      - DISCOVERY_SERVICE_URL=http://discovery-service:8009
+      - COPILOT_SERVICE_URL=http://merchant-copilot-service:8010
+      - GRAPHRAG_SERVICE_URL=http://knowledge-graph-rag-service:8011
+      - DISPUTE_SERVICE_URL=http://dispute-resolution-service:8012
       - DEFAULT_TENANT=store_tech
       - TRANSPORT_MODE=sse
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
@@ -324,6 +328,7 @@ services:
       - user-service
       - product-service
       - order-service
+      - dispute-resolution-service
     networks:
       - ecommerce-network
 
@@ -424,6 +429,38 @@ services:
     networks:
       - ecommerce-network
 
+  dispute-resolution-service:
+    build:
+      context: .
+      dockerfile: services/dispute-resolution-service/Dockerfile
+    container_name: dispute-resolution-service
+    restart: unless-stopped
+    ports:
+      - "${DISPUTE_SERVICE_PORT:-8012}:${DISPUTE_SERVICE_PORT:-8012}"
+    environment:
+      - PORT=${DISPUTE_SERVICE_PORT:-8012}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - SERVICE_NAME=dispute-resolution-service
+      - REDIS_HOST=redis
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-sys_design_secure_cache_pass_2026}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-sys_design_secure_cache_pass_2026}@redis:${REDIS_PORT:-6379}/0
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - GRAPHRAG_SERVICE_URL=http://knowledge-graph-rag-service:8011
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=8123
+      - KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS:-kafka:29092}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+    depends_on:
+      - redis
+      - qdrant
+      - kafka
+      - clickhouse
+      - knowledge-graph-rag-service
+    networks:
+      - ecommerce-network
+
   traefik-master:
     image: traefik:v3.7
     container_name: traefik-master
@@ -447,6 +484,8 @@ services:
       - mcp-service
       - discovery-service
       - merchant-copilot-service
+      - knowledge-graph-rag-service
+      - dispute-resolution-service
 
   traefik-backup:
     image: traefik:v3.7
@@ -468,6 +507,8 @@ services:
       - mcp-service
       - discovery-service
       - merchant-copilot-service
+      - knowledge-graph-rag-service
+      - dispute-resolution-service
 
   keepalived-master:
     image: osixia/keepalived:latest

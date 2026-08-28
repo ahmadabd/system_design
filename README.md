@@ -1,5 +1,11 @@
 # 🏗️ Event-Driven DDD Microservices Platform with E2E Resilience & Observability
 
+![Microservices](https://img.shields.io/badge/Services-12%20Microservices-blue)
+![FastAPI](https://img.shields.io/badge/Framework-FastAPI%20%7C%20FastMCP-009688)
+![Kafka](https://img.shields.io/badge/Broker-Apache%20Kafka%20(KRaft)-231F20)
+![Observability](https://img.shields.io/badge/Observability-OTel%20%7C%20Prometheus%20%7C%20Grafana%20%7C%20Loki%20%7C%20Jaeger-F46800)
+![Updated](https://img.shields.io/badge/Last%20Updated-August%202026-brightgreen)
+
 A production-grade, highly available, resilient, and observable E-Commerce platform built using Python **FastAPI**, **Domain-Driven Design (DDD)**, and **Apache Kafka (KRaft mode)**. The system is designed with a decentralized choreographed Saga pattern and robust traffic protection layers, including high-availability gateway routing, rate-limiting, dual-scope circuit breakers, API idempotency, and a complete distributed observability stack.
 
 ---
@@ -30,6 +36,8 @@ graph TD
         MCPServ["mcp-service:8008 (Model Context Protocol)"]
         DiscoveryServ["discovery-service:8009 (Product Discovery & Bundles)"]
         CopilotServ["merchant-copilot-service:8010 (ClickHouse Text-to-SQL)"]
+        GraphRAGServ["knowledge-graph-rag-service:8011 (GraphRAG & Community Detection)"]
+        DisputeServ["dispute-resolution-service:8012 (Multi-Agent Debate & Claims)"]
     end
 
     subgraph DataCaching ["Data, Vector & Caching Tier"]
@@ -78,6 +86,7 @@ graph TD
     Router -->|"/discovery/*"| DiscoveryServ
     Router -->|"/copilot/*"| CopilotServ
     Router -->|"/graphrag/*"| GraphRAGServ
+    Router -->|"/disputes/*"| DisputeServ
 
     %% Database, OLAP & Vector Connections
     UserServ -->|"db_breaker"| UserDB
@@ -92,12 +101,15 @@ graph TD
     CopilotServ -->|"MicroBatcher Insert"| ClickHouseDB
     GraphRAGServ -->|"qdrant_breaker"| QdrantDB
     GraphRAGServ -->|"In-Memory Graph"| NetworkXGraph[("NetworkX MultiDiGraph")]
-
+    DisputeServ -->|"qdrant_breaker"| QdrantDB
+    DisputeServ -->|"Resilient Breaker"| GraphRAGServ
+    DisputeServ -->|"Fraud Analytics"| ClickHouseDB
 
     %% Idempotency Cache Connections
     UserServ -->|"Idempotency Cache"| Redis
     ProdServ -->|"Idempotency Cache"| Redis
     OrdServ -->|"Idempotency Cache"| Redis
+    DisputeServ -->|"Idempotency Cache"| Redis
     PayServ -->|"Idempotency Cache"| Redis
     RepServ -->|"Idempotency Cache"| Redis
     WebhookServ -->|"Idempotency Cache"| Redis
@@ -387,10 +399,14 @@ system_design/
 │   │   ├── Dockerfile
 │   │   ├── requirements.txt
 │   │   └── src/
-│   └── knowledge-graph-rag-service/
-│       ├── Dockerfile
-│       ├── requirements.txt
-│       └── src/
+│   ├── knowledge-graph-rag-service/
+│   │   ├── Dockerfile
+│   │   ├── requirements.txt
+│   │   └── src/
+│   └── dispute-resolution-service/
+│       ├── Dockerfile                  # FastEmbed cached layer & multi-stage build
+│       ├── requirements.txt            # LangGraph, Qdrant, ClickHouse, FastEmbed, Redis
+│       └── src/                        # 5-stage Multi-Agent Negotiation & Self-RAG
 └── otel-collector-config.yaml          # OpenTelemetry central metrics/trace pipeline router
 ```
 
@@ -712,11 +728,14 @@ Fill in the custom database credentials, port configurations, and Redis credenti
 | **Merchant Copilot OpenAPI Docs** | `8010` | `http://localhost/copilot/docs` or `http://localhost:8010/docs` |
 | **Knowledge Graph RAG Service**   | `8011` | `http://localhost/graphrag/health` or `http://localhost:8011/health` |
 | **Knowledge Graph RAG OpenAPI Docs** | `8011` | `http://localhost/graphrag/docs` or `http://localhost:8011/docs` |
+| **Dispute Resolution Service**    | `8012` | `http://localhost/disputes/health` or `http://localhost:8012/health` |
+| **Dispute Resolution OpenAPI Docs**| `8012` | `http://localhost/disputes/docs` or `http://localhost:8012/docs` |
 | **Qdrant Vector Database Web UI**| `6333` | `http://localhost:6333/dashboard` |
 | **ClickHouse Web Client (Play UI)**| `8123` | `http://localhost:8123/play` |
 | **Jaeger Distributed Tracing** | `16686` | `http://localhost:16686/` |
 | **Grafana Telemetry Dashboard**| `3000` | `http://localhost:3000/` |
 | **Grafana GraphRAG Monitoring** | `3000` | `http://localhost:3000/d/graphrag-monitoring/knowledge-graph-rag-graphrag-monitoring` |
+| **Grafana Dispute Resolution**  | `3000` | `http://localhost:3000/d/dispute-monitoring/multi-agent-dispute-resolution-claims-monitoring` |
 | **Grafana Backend Error Inbox** | `3000` | `http://localhost:3000/d/logs-traces/backend-logs-error-tracing` |
 | **Grafana MCP Agent Monitoring** | `3000` | `http://localhost:3000/d/mcp-monitoring/model-context-protocol-mcp-ai-agent-gateway-monitoring` |
 | **Prometheus Metrics Engine** | `9090` | `http://localhost:9090/` |
@@ -1041,6 +1060,11 @@ All service interactions are routed through the Traefik Gateway on port `80`.
 | **Knowledge Graph RAG** | `POST` | `/graphrag/nodes`                     | `:8011/nodes`                           | `{"id", "name", "type", "description"}` | No  |
 | **Knowledge Graph RAG** | `POST` | `/graphrag/edges`                     | `:8011/edges`                           | `{"source", "target", "relation"}`      | No  |
 | **Knowledge Graph RAG** | `GET`  | `/graphrag/health`                    | `:8011/health`                          | None                                    | No  |
+| **Dispute Resolution**  | `POST` | `/disputes/claims`                    | `:8012/claims`                          | `{"order_id", "customer_id", "product_name", "claim_amount", "reason", "customer_statement"}` | No |
+| **Dispute Resolution**  | `GET`  | `/disputes/claims/{claim_id}`         | `:8012/claims/{claim_id}`               | None (Path Parameter)                   | No  |
+| **Dispute Resolution**  | `GET`  | `/disputes/claims`                    | `:8012/claims`                          | None                                    | No  |
+| **Dispute Resolution**  | `GET`  | `/disputes/stats`                     | `:8012/stats`                           | None                                    | No  |
+| **Dispute Resolution**  | `GET`  | `/disputes/health`                    | `:8012/health`                          | None                                    | No  |
 
 ---
 
@@ -1637,6 +1661,9 @@ The platform includes a dedicated **Model Context Protocol (MCP)** microservice 
 | `discover_product_bundle` | `query`, `budget`, `tenant_id` | Semantic bundle builder and price optimizer under budget constraints. |
 | `merchant_copilot_query` | `query`, `tenant_id` | Hybrid Text-to-SQL (ClickHouse) + Vector Policy RAG (Qdrant). |
 | `graph_rag_query` | `query`, `search_mode`, `tenant_id` | Microsoft GraphRAG: Multi-hop supplier/defect reasoning and Louvain community detection. |
+| `submit_dispute_claim` | `order_id`, `customer_id`, `product_name`, `claim_amount`, `reason`, `customer_statement`, `delivery_days_ago`, `tenant_id` | Submits claim to Multi-Agent Negotiation Arena (Buyer Advocate vs Merchant Defender) for judicial arbitration and supplier CAR generation. |
+| `get_dispute_status` | `claim_id`, `tenant_id` | Retrieves full details, adversarial debate transcript, and arbitration outcome for a dispute claim. |
+| `get_dispute_statistics` | `tenant_id` | Retrieves platform-wide dispute KPIs, auto-settlement ratios, and refunded amounts. |
 
 #### 2. Contextual Resources (`resources/list` & `resources/read`)
 - `ecommerce://policies/returns`: Official return, cancellation, and refund policies.
@@ -2036,3 +2063,128 @@ curl -s "http://localhost/graphrag/subgraph?seeds=prod_gaming_laptop_pro&hops=2"
 
 2. **Grafana GraphRAG Dashboard**:
    - Open **[http://localhost:3000/d/graphrag-monitoring/knowledge-graph-rag-graphrag-monitoring](http://localhost:3000/d/graphrag-monitoring/knowledge-graph-rag-graphrag-monitoring)** to visualize query rates, node latencies, entity distributions, and live log streams with direct trace links.
+
+---
+
+## ⚖️ 17. Multi-Agent Dispute Resolution & Claims (`dispute-resolution-service:8012`)
+
+The `dispute-resolution-service` provides an autonomous **Multi-Agent Negotiation Arena & Judicial Arbitration Engine** powered by **LangGraph**, **Self-RAG (Statutory Consumer Policy Grounding)**, **GraphRAG (Supplier Defect Evidence Traversal)**, **ClickHouse (Fraud & Chargeback Analytics)**, and **Kafka Saga Settlements**.
+
+```
+                           ┌──────────────────────────────────────────────┐
+                           │            CLAIM SUBMITTED                   │
+                           │   (POST /disputes/claims via Traefik :80)    │
+                           └──────────────────────┬───────────────────────┘
+                                                  │
+                                                  ▼
+                                   ┌──────────────────────────────┐
+                                   │     Buyer Advocate Agent     │
+                                   │  (Formulates legal claim)    │
+                                   └──────────────┬───────────────┘
+                                                  │
+                                                  ▼
+                                   ┌──────────────────────────────┐
+                                   │   Merchant Defender Agent    │
+                                   │ (Fulfillment & policy terms) │
+                                   └──────────────┬───────────────┘
+                                                  │
+                                                  ▼
+                               ┌──────────────────────────────────────┐
+                               │     Multi-Source Evidence Engine     │
+                               │  ├─ Self-RAG (Statutory Policies)    │
+                               │  ├─ GraphRAG (:8011 Defect Subgraph) │
+                               │  └─ ClickHouse (:8123 Fraud Scoring) │
+                               └──────────────────┬───────────────────┘
+                                                  │
+                                                  ▼
+                                   ┌──────────────────────────────┐
+                                   │ Impartial Arbitrator Agent   │
+                                   │  (Judicial Ruling & Splits)  │
+                                   └──────────────┬───────────────┘
+                                                  │
+                                                  ▼
+                               ┌──────────────────────────────────────┐
+                               │        Settlement Engine             │
+                               │  ├─ Auto-Disbursement ($ <= 200)     │
+                               │  ├─ Kafka event: `dispute.resolved`  │
+                               │  └─ Human Escalation Queue           │
+                               └──────────────────────────────────────┘
+```
+
+### Multi-Agent Debate & Resolution Features
+1. **Adversarial Legal Debate**: Simulates arguments between the `Buyer Advocate` (maximizing customer compensation) and `Merchant Defender` (safeguarding retailer operational margins and return window enforcement).
+2. **Tri-Tier Evidence Grounding**:
+   - **Self-RAG (Qdrant)**: Retrieves legally enforceable platform policies (Statutory 14-day window, latent defect exceptions, transit damage subrogation).
+   - **GraphRAG (:8011)**: Cross-checks if the product is subject to an active Tier-1 OEM component defect or batch recall.
+   - **ClickHouse (:8123)**: Computes historical customer refund abuse scores and merchant chargeback risk.
+3. **Equitable Liability Allocation**: When a latent factory defect is confirmed, merchant liability is reduced to **0%**, full 100% refund is awarded to the customer, and a **Corrective Action Request (CAR)** is generated for the culpable OEM supplier.
+4. **Autonomous Settlement vs. Human Escalation**: Automatically settles and emits financial refund events for low-risk claims ($\le \$200$), while escalating high-dollar or high-risk claims to compliance officers.
+
+### Enterprise NFRs & Graceful Traffic Draining
+- **Redis API Idempotency (`@idempotent_api`)**: Evaluates `X-Idempotency-Key` headers in Redis with atomic locks to prevent duplicate claim creation or double refunds during network retries.
+- **Graceful Shutdown & Readiness Draining**: Implements a dedicated `/health/ready` probe. When a SIGTERM/SIGINT signal arrives, the service marks itself not ready (returning 503 so Traefik removes the instance from load-balancing), waits for in-flight LangGraph multi-agent debates to finish within a 5-second drain window, and safely closes Redis/Kafka connection pools.
+- **Circuit Breaker Resilience**: Protects upstream GraphRAG and ClickHouse integrations with `AsyncCircuitBreaker` and deterministic heuristic fallbacks.
+- **Multi-Tenant Scoping**: All claims, policies, and metrics are isolated per tenant via `X-Tenant-ID`.
+
+### Copy-Pasteable Curl Examples
+
+#### 1. Hardware Defect (Triggers GraphRAG Defect Link & Supplier CAR)
+```bash
+curl -s -X POST http://localhost/disputes/claims \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-ID: store_tech" \
+  -H "X-Idempotency-Key: claim-defect-001" \
+  -d '{
+    "order_id": "ord-live-7701",
+    "customer_id": 14,
+    "product_name": "Gaming Laptop Pro (32GB RAM, RTX 4080)",
+    "claim_amount": 1899.99,
+    "reason": "DEFECTIVE_PRODUCT",
+    "customer_statement": "The laptop overheats and thermal throttles during video rendering within 5 minutes.",
+    "delivery_days_ago": 6
+  }'
+```
+
+#### 2. Out-of-Window Discretionary Return (Triggers Claim Denial)
+```bash
+curl -s -X POST http://localhost/disputes/claims \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-ID: store_tech" \
+  -H "X-Idempotency-Key: claim-remorse-002" \
+  -d '{
+    "order_id": "ord-live-8802",
+    "customer_id": 99,
+    "product_name": "RGB Desk Mat (Extra Large)",
+    "claim_amount": 39.99,
+    "reason": "BUYER_REMORSE",
+    "customer_statement": "I just decided I dont like the color anymore.",
+    "delivery_days_ago": 30
+  }'
+```
+
+#### 3. Idempotent Retry Demonstration (Instant Cached 201 Response)
+```bash
+# Re-sending the exact same request with the same X-Idempotency-Key returns cached result instantaneously:
+curl -i -s -X POST http://localhost/disputes/claims \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-ID: store_tech" \
+  -H "X-Idempotency-Key: claim-defect-001" \
+  -d '{
+    "order_id": "ord-live-7701",
+    "customer_id": 14,
+    "product_name": "Gaming Laptop Pro (32GB RAM, RTX 4080)",
+    "claim_amount": 1899.99,
+    "reason": "DEFECTIVE_PRODUCT",
+    "customer_statement": "The laptop overheats and thermal throttles during video rendering within 5 minutes.",
+    "delivery_days_ago": 6
+  }'
+```
+
+#### 4. Readiness & Platform Dispute Statistics
+```bash
+# Readiness Probe (Traffic Draining)
+curl -s http://localhost/disputes/health/ready
+
+# Dispute Aggregates
+curl -s http://localhost/disputes/stats
+```

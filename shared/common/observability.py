@@ -186,10 +186,17 @@ def register_graceful_shutdown(app: FastAPI, cleanup_callbacks: list):
                 
         logger.warning("Resource cleanup and traffic draining completed. Terminating process.")
     
-    loop = asyncio.get_event_loop()
-    for sig in [signal.SIGTERM, signal.SIGINT]:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
         try:
-            loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(shutdown_handler(s)))
-        except ValueError:
-            # Under some environments/windows, add_signal_handler is not fully supported
-            pass
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = None
+
+    if loop:
+        for sig in [signal.SIGTERM, signal.SIGINT]:
+            try:
+                loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(shutdown_handler(s)))
+            except (ValueError, RuntimeError):
+                pass

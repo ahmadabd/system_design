@@ -378,3 +378,108 @@ def register_tools(mcp, adapter=gateway_adapter):
             if status == "degraded":
                 mcp_circuit_breaker_trips_total.labels(tool_name="graph_rag_query").inc()
             return result
+
+    # =========================================================================
+    # 7. Dispute Resolution & Claims Arbitration Tools
+    # =========================================================================
+
+    @mcp.tool(
+        name="submit_dispute_claim",
+        description="Submit a customer dispute claim to trigger the Multi-Agent Negotiation Arena (Buyer Advocate vs Merchant Defender) with Self-RAG policy grounding and GraphRAG defect verification."
+    )
+    async def submit_dispute_claim(
+        order_id: str = Field(..., description="Order identifier under dispute (e.g. 'ord-101')"),
+        customer_id: int = Field(..., description="Customer account ID filing the dispute"),
+        product_name: str = Field(..., description="Full product name / SKU description"),
+        claim_amount: float = Field(..., gt=0, description="Dollar amount claimed for reimbursement"),
+        reason: str = Field(..., description="Dispute category: 'DEFECTIVE_PRODUCT', 'BUYER_REMORSE', 'TRANSIT_DAMAGE', 'UNAUTHORIZED_TRANSACTION'"),
+        customer_statement: str = Field(..., description="Customer's narrative describing the defect or issue"),
+        delivery_days_ago: int = Field(default=5, ge=0, description="Number of calendar days elapsed since confirmed delivery"),
+        idempotency_key: Optional[str] = Field(default=None, description="Optional idempotency key to prevent duplicate filings"),
+        tenant_id: str = Field(default="store_tech", description="Store tenant context")
+    ) -> Dict[str, Any]:
+        """
+        Submit a dispute claim for multi-agent arbitration.
+        Returns adversarial debate arguments, judicial verdict, and supplier CAR notices.
+        """
+        with tracer.start_as_current_span("MCP tool: submit_dispute_claim") as span:
+            span.set_attribute("mcp.tool_name", "submit_dispute_claim")
+            span.set_attribute("mcp.order_id", order_id)
+            span.set_attribute("mcp.reason", reason)
+            span.set_attribute("tenant.id", tenant_id)
+
+            start = time.perf_counter()
+            logger.info(f"[MCP Tool: submit_dispute_claim] order={order_id}, reason={reason}, amount={claim_amount}")
+            result = await adapter.submit_dispute_claim(
+                order_id=order_id,
+                customer_id=customer_id,
+                product_name=product_name,
+                claim_amount=claim_amount,
+                reason=reason,
+                customer_statement=customer_statement,
+                delivery_days_ago=delivery_days_ago,
+                idempotency_key=idempotency_key,
+                tenant_id=tenant_id
+            )
+            duration = time.perf_counter() - start
+            status = result.get("status", "unknown")
+
+            span.set_attribute("mcp.status", status)
+            span.set_attribute("mcp.success", result.get("success", False))
+
+            mcp_tool_calls_total.labels(tool_name="submit_dispute_claim", status=status, tenant_id=tenant_id).inc()
+            mcp_tool_duration_seconds.labels(tool_name="submit_dispute_claim").observe(duration)
+            if status == "degraded":
+                mcp_circuit_breaker_trips_total.labels(tool_name="submit_dispute_claim").inc()
+            return result
+
+    @mcp.tool(
+        name="get_dispute_status",
+        description="Retrieve full details, adversarial debate transcript, and arbitration outcome for an existing dispute claim."
+    )
+    async def get_dispute_status(
+        claim_id: str = Field(..., description="Unique claim identifier (e.g. 'claim_5e968c81')"),
+        tenant_id: str = Field(default="store_tech", description="Store tenant context")
+    ) -> Dict[str, Any]:
+        """Lookup dispute claim status and judicial rationale."""
+        with tracer.start_as_current_span("MCP tool: get_dispute_status") as span:
+            span.set_attribute("mcp.tool_name", "get_dispute_status")
+            span.set_attribute("mcp.claim_id", claim_id)
+            span.set_attribute("tenant.id", tenant_id)
+
+            start = time.perf_counter()
+            logger.info(f"[MCP Tool: get_dispute_status] claim_id={claim_id}, tenant={tenant_id}")
+            result = await adapter.get_dispute_claim(claim_id=claim_id, tenant_id=tenant_id)
+            duration = time.perf_counter() - start
+            status = result.get("status", "unknown")
+
+            span.set_attribute("mcp.status", status)
+            span.set_attribute("mcp.success", result.get("success", False))
+
+            mcp_tool_calls_total.labels(tool_name="get_dispute_status", status=status, tenant_id=tenant_id).inc()
+            mcp_tool_duration_seconds.labels(tool_name="get_dispute_status").observe(duration)
+            if status == "degraded":
+                mcp_circuit_breaker_trips_total.labels(tool_name="get_dispute_status").inc()
+            return result
+
+    @mcp.tool(
+        name="get_dispute_statistics",
+        description="Retrieve platform-wide dispute metrics including total claims, auto-settlement ratio, and refunded amounts."
+    )
+    async def get_dispute_statistics(
+        tenant_id: str = Field(default="store_tech", description="Store tenant context")
+    ) -> Dict[str, Any]:
+        """Retrieve aggregated dispute and claim resolution metrics."""
+        with tracer.start_as_current_span("MCP tool: get_dispute_statistics") as span:
+            span.set_attribute("mcp.tool_name", "get_dispute_statistics")
+            span.set_attribute("tenant.id", tenant_id)
+
+            start = time.perf_counter()
+            result = await adapter.get_dispute_stats(tenant_id=tenant_id)
+            duration = time.perf_counter() - start
+            status = result.get("status", "unknown")
+
+            mcp_tool_calls_total.labels(tool_name="get_dispute_statistics", status=status, tenant_id=tenant_id).inc()
+            mcp_tool_duration_seconds.labels(tool_name="get_dispute_statistics").observe(duration)
+            return result
+

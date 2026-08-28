@@ -17,7 +17,7 @@ scrape_configs:
 
   - job_name: "fastapi"
     static_configs:
-      - targets: ["user-service:8001", "product-service:8002", "order-service:8003", "payment-service:8004", "reporting-service:8005", "webhook-service:8006", "support-service:8007", "mcp-service:8008", "discovery-service:8009", "merchant-copilot-service:8010", "knowledge-graph-rag-service:8011"]
+      - targets: ["user-service:8001", "product-service:8002", "order-service:8003", "payment-service:8004", "reporting-service:8005", "webhook-service:8006", "support-service:8007", "mcp-service:8008", "discovery-service:8009", "merchant-copilot-service:8010", "knowledge-graph-rag-service:8011", "dispute-resolution-service:8012"]
 
 
   - job_name: "otel-collector"

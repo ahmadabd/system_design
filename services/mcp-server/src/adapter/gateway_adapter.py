@@ -309,6 +309,81 @@ class GatewayAdapter:
         except Exception as exc:
             return {"success": False, "status": "error", "message": str(exc)}
 
+    async def submit_dispute_claim(
+        self,
+        order_id: str,
+        customer_id: int,
+        product_name: str,
+        claim_amount: float,
+        reason: str,
+        customer_statement: str,
+        delivery_days_ago: int = 5,
+        idempotency_key: Optional[str] = None,
+        tenant_id: str = "store_tech"
+    ) -> Dict[str, Any]:
+        """Submit a dispute claim for multi-agent negotiation, Self-RAG policy grounding, and arbitration."""
+        key = idempotency_key or f"mcp-claim-{order_id}-{uuid.uuid4().hex[:6]}"
+        headers = self._build_headers(tenant_id=tenant_id, idempotency_key=key)
+        url = f"{settings.DISPUTE_SERVICE_URL}/claims"
+        payload = {
+            "order_id": order_id,
+            "customer_id": customer_id,
+            "product_name": product_name,
+            "claim_amount": claim_amount,
+            "reason": reason,
+            "customer_statement": customer_statement,
+            "delivery_days_ago": delivery_days_ago
+        }
+
+        try:
+            response = await self.client.post(url, json=payload, headers=headers)
+            if response.status_code in (200, 201):
+                data = response.json()
+                data["idempotency_key"] = key
+                return {"success": True, "status": "success", "data": data}
+            return {"success": False, "status": "error", "message": response.text}
+        except CircuitBreakerOpenException:
+            return {"success": False, "status": "degraded", "message": "Dispute Resolution Service is degraded."}
+        except Exception as exc:
+            return {"success": False, "status": "error", "message": str(exc)}
+
+    async def get_dispute_claim(
+        self,
+        claim_id: str,
+        tenant_id: str = "store_tech"
+    ) -> Dict[str, Any]:
+        """Retrieve full details, debate transcript, and judicial verdict for a dispute claim."""
+        headers = self._build_headers(tenant_id=tenant_id)
+        url = f"{settings.DISPUTE_SERVICE_URL}/claims/{claim_id}"
+
+        try:
+            response = await self.client.get(url, headers=headers)
+            if response.status_code == 200:
+                return {"success": True, "status": "success", "data": response.json()}
+            return {"success": False, "status": "error", "message": response.text}
+        except CircuitBreakerOpenException:
+            return {"success": False, "status": "degraded", "message": "Dispute Resolution Service is degraded."}
+        except Exception as exc:
+            return {"success": False, "status": "error", "message": str(exc)}
+
+    async def get_dispute_stats(
+        self,
+        tenant_id: str = "store_tech"
+    ) -> Dict[str, Any]:
+        """Retrieve platform-wide dispute resolution and auto-settlement metrics."""
+        headers = self._build_headers(tenant_id=tenant_id)
+        url = f"{settings.DISPUTE_SERVICE_URL}/stats"
+
+        try:
+            response = await self.client.get(url, headers=headers)
+            if response.status_code == 200:
+                return {"success": True, "status": "success", "data": response.json()}
+            return {"success": False, "status": "error", "message": response.text}
+        except CircuitBreakerOpenException:
+            return {"success": False, "status": "degraded", "message": "Dispute Resolution Service is degraded."}
+        except Exception as exc:
+            return {"success": False, "status": "error", "message": str(exc)}
+
     async def close(self):
         await self.client.close()
 

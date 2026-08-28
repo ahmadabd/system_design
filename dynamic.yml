@@ -104,6 +104,14 @@ http:
         - "strip-graphrag"
       service: knowledge-graph-rag-service
 
+    dispute-service:
+      rule: "PathPrefix(`/disputes`)"
+      middlewares:
+        - "load-shedding"
+        - "rate-limit"
+        - "strip-disputes"
+      service: dispute-resolution-service
+
   middlewares:
     load-shedding:
       inFlightReq:
@@ -174,6 +182,11 @@ http:
       stripPrefix:
         prefixes:
           - "/graphrag"
+
+    strip-disputes:
+      stripPrefix:
+        prefixes:
+          - "/disputes"
 
 
   services:
@@ -271,3 +284,12 @@ http:
           timeout: 1s
         servers:
           - url: "http://knowledge-graph-rag-service:8011"
+
+    dispute-resolution-service:
+      loadBalancer:
+        healthCheck:
+          path: /health/ready
+          interval: 2s
+          timeout: 1s
+        servers:
+          - url: "http://dispute-resolution-service:8012"
