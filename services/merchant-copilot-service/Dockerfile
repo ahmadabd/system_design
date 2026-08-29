@@ -19,6 +19,7 @@ RUN python -c "from fastembed import TextEmbedding; TextEmbedding(model_name='BA
 
 # Copy shared library code and service code
 COPY shared /app/shared
+COPY algorithms /app/algorithms
 COPY services/merchant-copilot-service/src /app/services/merchant-copilot-service/src
 
 WORKDIR /app/services/merchant-copilot-service

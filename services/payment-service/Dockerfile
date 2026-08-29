@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy shared monorepo components
 COPY shared/ /app/shared/
+COPY algorithms/ /app/algorithms/
 
 # Copy service-specific source code
 # Copy Alembic migrations configuration and files

@@ -52,7 +52,7 @@ class ClickHouseClient:
             # 1. Create Database
             client.command(f"CREATE DATABASE IF NOT EXISTS {self.database}")
 
-            # 2. Products Analytics Table (ReplacingMergeTree for deduplication)
+            # 2. Products Analytics Table (ReplacingMergeTree for deduplication + Bloom Filter skip index)
             client.command(f"""
             CREATE TABLE IF NOT EXISTS {self.database}.products_analytics (
                 id UInt64,
@@ -62,12 +62,13 @@ class ClickHouseClient:
                 price Float64,
                 stock UInt32,
                 store_id UInt32,
-                updated_at DateTime DEFAULT now()
+                updated_at DateTime DEFAULT now(),
+                INDEX idx_store_id (store_id) TYPE bloom_filter(0.01) GRANULARITY 1
             ) ENGINE = ReplacingMergeTree(updated_at)
             ORDER BY (tenant_id, id);
             """)
 
-            # 3. Orders Analytics Table
+            # 3. Orders Analytics Table (Bloom Filter on user_id for fast customer segmentation)
             client.command(f"""
             CREATE TABLE IF NOT EXISTS {self.database}.orders_analytics (
                 id String,
@@ -75,12 +76,13 @@ class ClickHouseClient:
                 user_id UInt64,
                 total_amount Float64,
                 status LowCardinality(String),
-                created_at DateTime DEFAULT now()
+                created_at DateTime DEFAULT now(),
+                INDEX idx_user_id (user_id) TYPE bloom_filter(0.01) GRANULARITY 1
             ) ENGINE = ReplacingMergeTree(created_at)
             ORDER BY (tenant_id, created_at, id);
             """)
 
-            # 4. Order Items Analytics Table
+            # 4. Order Items Analytics Table (Bloom Filter on product_id for fast item lookups)
             client.command(f"""
             CREATE TABLE IF NOT EXISTS {self.database}.order_items_analytics (
                 id String,
@@ -91,12 +93,13 @@ class ClickHouseClient:
                 category LowCardinality(String),
                 unit_price Float64,
                 quantity UInt32,
-                created_at DateTime DEFAULT now()
+                created_at DateTime DEFAULT now(),
+                INDEX idx_product_id (product_id) TYPE bloom_filter(0.01) GRANULARITY 1
             ) ENGINE = ReplacingMergeTree(created_at)
             ORDER BY (tenant_id, order_id, product_id);
             """)
 
-            # 5. Payments Analytics Table
+            # 5. Payments Analytics Table (Bloom Filter on transaction_id for audit tracking)
             client.command(f"""
             CREATE TABLE IF NOT EXISTS {self.database}.payments_analytics (
                 id String,
@@ -106,12 +109,13 @@ class ClickHouseClient:
                 status LowCardinality(String),
                 payment_method LowCardinality(String),
                 transaction_id String,
-                created_at DateTime DEFAULT now()
+                created_at DateTime DEFAULT now(),
+                INDEX idx_transaction_id (transaction_id) TYPE bloom_filter(0.01) GRANULARITY 1
             ) ENGINE = ReplacingMergeTree(created_at)
             ORDER BY (tenant_id, order_id, id);
             """)
 
-            logger.info("Successfully verified and initialized all ClickHouse ReplacingMergeTree tables.")
+            logger.info("Successfully verified and initialized all ClickHouse ReplacingMergeTree tables with Bloom Filter skip indexes.")
         except Exception as e:
             logger.error(f"Failed to initialize ClickHouse tables: {e}", exc_info=True)
 

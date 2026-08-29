@@ -61,7 +61,7 @@
             "type": "loki",
             "uid": "Loki"
           },
-          "expr": "sum by (service_name) (rate({service_name=~\"${service_name:regex}\"} |~ \"(?i)error|exception|fail|traceback\" [1m]))",
+          "expr": "sum by (service_name) (rate({service_name=~\"${service_name:regex}\"} | json | severity =~ \"(?i)ERROR|CRITICAL\" [1m]))",
           "legendFormat": "🔥 {{service_name}} Errors/sec",
           "refId": "A"
         }
@@ -97,7 +97,7 @@
             "type": "loki",
             "uid": "Loki"
           },
-          "expr": "{service_name=~\"${service_name:regex}\"} |~ \"(?i)error|exception|fail|critical|traceback|warning\"",
+          "expr": "{service_name=~\"${service_name:regex}\"} | json | severity =~ \"(?i)ERROR|CRITICAL|WARNING\"",
           "refId": "A"
         }
       ],

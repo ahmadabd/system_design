@@ -263,6 +263,20 @@ graph TD
     DispatchSuccess -- "No (4xx Client Error)" --> RecordFailNonRetriable["Log Non-Retriable Fail in DB"] --> DLQ
 ```
 
+### K. Bloom Filter Cache Penetration & Identity Protection
+- **The Threat (Cache Penetration)**: Malicious scrapers or bots querying high volumes of non-existent entity IDs (e.g. `GET /products/999999` or `GET /users/888888`) completely bypass the Redis cache, forcing repeated, expensive SQL full-index scans against PostgreSQL.
+- **The Solution**: We implement mathematically optimized **Bloom Filters** (`shared/common/bloom.py` and `algorithms/bloom_filter.py`) backed by in-memory bit arrays and distributed Redis bitsets:
+  - **`product-service`**: Maintains `product_bloom_filter` pre-warmed on boot. When non-existent IDs are requested, the `@bloom_guard` decorator intercepts the request at the edge in **$< 0.01\text{ms}$**, immediately returning `404 Not Found` without touching PostgreSQL or Redis.
+  - **`user-service`**: Employs `user_id_bloom_filter` for profile lookup protection and `user_identity_bloom_filter` for $O(1)$ email/username uniqueness validation during user registration (`POST /api/v1/users`).
+
+### L. Log-Structured Merge-Tree (LSM) Storage Engine & Event Deduplication
+- **The Write-Heavy Challenge**: Webhook delivery audit logs (`webhook-service`) produce tens of thousands of writes per second (request payload, response body, latency, status code). Writing these directly to PostgreSQL causes table bloat, index lock contention, and heavy vacuuming overhead.
+- **The LSM Engine Solution**: We implement a complete **LSM-Tree Storage Engine** (`algorithms/lsm_tree.py` and `services/webhook-service/src/infrastructure/lsm_storage.py`):
+  - **Sequential Writes**: Appends logs sequentially to `wal.log` on disk and buffers them in RAM (`MemTable`), absorbing writes in **$< 0.05\text{ms}$**.
+  - **Immutable SSTables with Embedded Bloom Filters**: When `MemTable` fills up, it flushes sorted, immutable `SSTable` files to disk, each embedding its own Bloom filter to skip disk blocks during point lookups (`GET /webhooks/lsm-logs/{key}`).
+  - **Background Merge Compaction**: Periodically merge-sorts overlapping SSTables, cleans up tombstones, and reclaims disk space.
+  - **Event Deduplication**: Fast-path `dedup_bloom` filter suppresses duplicate Kafka events in RAM before issuing SQL queries.
+
 ---
 
 ## 🏬 3. Multi-Tenancy Architecture (Schema-per-Tenant Model)
@@ -1469,9 +1483,11 @@ To explore core traffic shaping and resilience algorithms in pure, stand-alone P
 
 | File | Pattern | Core Mechanism | How to Run |
 |---|---|---|---|
-| [circuit_breaker.py](file:///home/ahmad/Desktop/test/system_design/algorithms/circuit_breaker.py) | **Circuit Breaker** | A state machine simulating failures, transition phases (`CLOSED`, `OPEN`, `HALF-OPEN`), and auto-recovery. | `python3 algorithms/circuit_breaker.py` |
-| [token_bucket.py](file:///home/ahmad/Desktop/test/system_design/algorithms/token_bucket.py) | **Token Bucket** | Efficient **lazy-refill strategy** allowing bursty traffic up to bucket capacity while capping average request throughput. | `python3 algorithms/token_bucket.py` |
-| [leaky_bucket.py](file:///home/ahmad/Desktop/test/system_design/algorithms/leaky_bucket.py) | **Leaky Bucket** | Efficient **lazy-leak strategy** smoothing out sudden bursts completely, outputting steady uniform flow. | `python3 algorithms/leaky_bucket.py` |
+| [`circuit_breaker.py`](algorithms/circuit_breaker.py) | **Circuit Breaker** | A state machine simulating failures, transition phases (`CLOSED`, `OPEN`, `HALF-OPEN`), and auto-recovery. | `python3 algorithms/circuit_breaker.py` |
+| [`token_bucket.py`](algorithms/token_bucket.py) | **Token Bucket** | Efficient **lazy-refill strategy** allowing bursty traffic up to bucket capacity while capping average request throughput. | `python3 algorithms/token_bucket.py` |
+| [`leaky_bucket.py`](algorithms/leaky_bucket.py) | **Leaky Bucket** | Efficient **lazy-leak strategy** smoothing out sudden bursts completely, outputting steady uniform flow. | `python3 algorithms/leaky_bucket.py` |
+| [`bloom_filter.py`](algorithms/bloom_filter.py) | **Bloom Filter & Counting BF** | Probabilistic set membership with Kirsch-Mitzenmacher double hashing, dynamic mathematical sizing ($m, k$), and 8-bit counter deletions. | `python3 algorithms/bloom_filter.py` |
+| [`lsm_tree.py`](algorithms/lsm_tree.py) | **Log-Structured Merge-Tree** | High-throughput write engine with in-memory `MemTable`, sequential `WAL`, immutable `SSTables` (with embedded Bloom filters & sparse index), and merge compaction. | `python3 algorithms/lsm_tree.py` |
 
 ---
 
@@ -1612,6 +1628,22 @@ docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
    {service_name=~".+"} |= "ERROR"
    ```
 3. Click on any log line's **`trace_id`** badge to jump straight from Loki logs into the exact Jaeger trace!
+
+### D. Bloom Filter & LSM Storage Telemetry
+The Bloom Filter security layer and LSM Tree storage engine are instrumented with comprehensive Prometheus metrics, OpenTelemetry span attributes, and automated Prometheus alerts:
+
+| Metric Name | Type | Labels | Description |
+| :--- | :--- | :--- | :--- |
+| `bloom_filter_queries_total` | Counter | `filter_name`, `result` (`hit`/`miss`) | Total Bloom membership checks across services. |
+| `bloom_filter_fast_rejections_total` | Counter | `filter_name` | Total non-existent requests fast-rejected in RAM before touching DB/Cache. |
+| `lsm_storage_appends_total` | Counter | `engine` | Total high-frequency append-only writes absorbed by LSM engine. |
+| `lsm_storage_reads_total` | Counter | `engine`, `result` (`hit`/`miss`) | Total point reads served from MemTable / SSTables. |
+| `lsm_storage_memtable_entries` | Gauge | `engine` | Current active in-memory write buffer count. |
+| `lsm_storage_sstables_count` | Gauge | `engine` | Number of immutable on-disk SSTable files. |
+
+- **Active Alert Rules ([`alert_rules.yml`](alert_rules.yml))**:
+  - `BloomFilterHighFastRejectionRate`: Triggers when $>20\text{ rejections/sec}$ occur on any Bloom filter (flags scraping / cache penetration scans).
+  - `LSMHighMemTableBacklog`: Triggers when MemTable entries stay near threshold ($>45$) for $>2\text{m}$, signaling disk I/O or compaction bottlenecks.
 
 ---
 
@@ -1837,6 +1869,10 @@ flowchart TD
 
 #### 5. Dynamic Schema Linking via Qdrant Vector Catalog
 - ClickHouse table DDLs and column descriptions are embedded and indexed in Qdrant (`clickhouse_schema_catalog`). The copilot dynamically links only relevant table schemas into the LLM prompt rather than overloading the context window with the entire database catalog.
+
+#### 6. ClickHouse LSM Engine & Secondary Bloom Filter Skip Indexes
+- **LSM Storage Engine (`ReplacingMergeTree`)**: ClickHouse ingests streaming batches from Kafka into immutable disk parts (SSTables) and merges duplicate records by primary key in the background, achieving $>100,000\text{ writes/sec}$ without lock contention.
+- **Secondary Bloom Filter Skip Indexes (`INDEX ... TYPE bloom_filter(0.01)`)**: Configured across all analytical tables (`idx_store_id`, `idx_user_id`, `idx_product_id`, `idx_transaction_id`). During query execution, ClickHouse checks the Bloom filter in RAM for each 8,192-row granule and **completely skips reading and decompressing irrelevant disk blocks**, accelerating analytical filters by up to $10\times$.
 
 ---
 

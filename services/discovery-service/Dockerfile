@@ -12,6 +12,7 @@ COPY services/discovery-service/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY shared/ /app/shared/
+COPY algorithms/ /app/algorithms/
 COPY services/discovery-service/src/ /app/src/
 
 ENV PYTHONPATH=/app

@@ -46,7 +46,7 @@ class SQLAlchemyWebhookRepository:
         attempt: int,
         success: bool
     ) -> WebhookDeliveryLogDB:
-        """Persist a webhook delivery attempt log for audit tracking"""
+        """Persist a webhook delivery attempt log in both PostgreSQL and high-throughput LSM Tree storage"""
         log = WebhookDeliveryLogDB(
             order_id=order_id,
             store_id=store_id,
@@ -60,6 +60,25 @@ class SQLAlchemyWebhookRepository:
         )
         self.session.add(log)
         await self.session.flush()
+
+        # Append to LSM Tree Storage Engine (RAM MemTable + Disk WAL)
+        try:
+            from src.infrastructure.lsm_storage import webhook_lsm_engine
+            webhook_lsm_engine.record_delivery_log(
+                order_id=order_id,
+                store_id=store_id,
+                event_type=event_type,
+                webhook_url=webhook_url,
+                request_payload=request_payload,
+                response_status=response_status,
+                response_body=response_body,
+                attempt=attempt,
+                success=success
+            )
+        except Exception as lsm_err:
+            import logging
+            logging.getLogger("SQLAlchemyWebhookRepository").warning(f"LSM Tree audit append failed: {lsm_err}")
+
         return log
 
     async def find_all_logs(self) -> list[WebhookDeliveryLogDB]:

@@ -14,7 +14,8 @@ CREATE TABLE copilot_analytics.products_analytics (
     price Float64,                      -- Unit retail price
     stock UInt32,                       -- Current inventory available in stock
     store_id UInt32,                    -- Store identifier
-    updated_at DateTime                 -- Last updated timestamp
+    updated_at DateTime,                -- Last updated timestamp
+    INDEX idx_store_id (store_id) TYPE bloom_filter(0.01) GRANULARITY 1
 ) ENGINE = ReplacingMergeTree(updated_at) ORDER BY (tenant_id, id);
         """.strip(),
         "common_queries": [
@@ -32,7 +33,8 @@ CREATE TABLE copilot_analytics.orders_analytics (
     user_id UInt64,                     -- Customer user ID
     total_amount Float64,               -- Total order monetary amount in USD
     status LowCardinality(String),      -- Order status ('PENDING', 'CONFIRMED', 'CANCELLED', 'FAILED')
-    created_at DateTime                 -- Order creation timestamp
+    created_at DateTime,                -- Order creation timestamp
+    INDEX idx_user_id (user_id) TYPE bloom_filter(0.01) GRANULARITY 1
 ) ENGINE = ReplacingMergeTree(created_at) ORDER BY (tenant_id, created_at, id);
         """.strip(),
         "common_queries": [
@@ -53,7 +55,8 @@ CREATE TABLE copilot_analytics.order_items_analytics (
     category LowCardinality(String),    -- Product category
     unit_price Float64,                 -- Price charged per unit
     quantity UInt32,                    -- Quantity purchased
-    created_at DateTime                 -- Item creation timestamp
+    created_at DateTime,                -- Item creation timestamp
+    INDEX idx_product_id (product_id) TYPE bloom_filter(0.01) GRANULARITY 1
 ) ENGINE = ReplacingMergeTree(created_at) ORDER BY (tenant_id, order_id, product_id);
         """.strip(),
         "common_queries": [

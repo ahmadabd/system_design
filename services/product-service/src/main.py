@@ -43,6 +43,20 @@ async def lifespan(app: FastAPI):
     # Start Outbox Publisher background worker
     outbox_publisher.start()
 
+    # Warm up Product Bloom Filter with active product IDs
+    try:
+        from src.presentation.api import product_bloom_filter
+        from src.adapter.db_models import ProductDB
+        from sqlalchemy.future import select
+        async with db.get_session() as session:
+            stmt = select(ProductDB.id)
+            res = await session.execute(stmt)
+            for (pid,) in res.all():
+                product_bloom_filter.add(str(pid))
+        logger.info(f"Product Bloom Filter warmed up with {product_bloom_filter.count} items.")
+    except Exception as bf_err:
+        logger.warning(f"Failed to warm up Product Bloom Filter: {bf_err}")
+
     # Open persistent Kafka connection for background subscriber listener
     await background_mq_manager.connect()
     subscriber = ProductMessagingSubscriber(background_mq_manager)

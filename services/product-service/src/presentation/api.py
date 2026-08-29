@@ -12,11 +12,16 @@ from shared.common.messaging import KafkaManager
 from shared.common.idempotency import IdempotencyManager, idempotent_api
 from shared.common.resilience import CircuitBreakerOpenException
 from shared.common.cache import cache_fallback
+from shared.common.bloom import bloom_guard
+from algorithms.bloom_filter import BloomFilter
 
 router = APIRouter(prefix="", tags=["Products"])
 
 # Establish Redis Idempotency Manager
 idempotency_manager = IdempotencyManager(settings.REDIS_URL)
+
+# Establish Bloom Filter for catalog product IDs (Cache Penetration Defense)
+product_bloom_filter = BloomFilter(expected_elements=100000, false_positive_rate=0.01)
 
 # Establish independent broker manager for product API calls
 mq_manager = KafkaManager(settings.KAFKA_BOOTSTRAP_SERVERS)
@@ -45,7 +50,10 @@ async def create_product(
             stock=request_data.stock,
             store_id=request_data.store_id
         )
-        return await service.create_product(command)
+        created = await service.create_product(command)
+        # Register new product ID in Bloom Filter
+        product_bloom_filter.add(str(created.id))
+        return created
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -71,6 +79,7 @@ async def list_products(
         )
 
 @router.get("/{product_id:int}", response_model=ProductDTO)
+@bloom_guard(bloom_filter=product_bloom_filter, id_param="product_id", filter_name="product_catalog_bloom", not_found_message="Product not found (Bloom Guard: fast rejection)")
 @cache_fallback(idempotency_manager, db.db_breaker, key_prefix="product", id_param="product_id")
 async def get_product(
     product_id: int,

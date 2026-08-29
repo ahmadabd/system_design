@@ -185,4 +185,24 @@ groups:
           summary: "High Dispute Human Escalation Rate"
           description: "Over 60% of customer claims are exceeding the auto-settlement threshold and escalating to human compliance."
 
+      # --- Bloom Filter & LSM Storage Alerts ---
+
+      - alert: BloomFilterHighFastRejectionRate
+        expr: sum(rate(bloom_filter_fast_rejections_total[2m])) by (filter_name) > 20
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High Cache Penetration Traffic Intercepted on Bloom Filter: {{ $labels.filter_name }}"
+          description: "Over 20 non-existent keys/sec are hitting Bloom Filter {{ $labels.filter_name }}. Possible bot scraping or penetration scan mitigated."
+
+      - alert: LSMHighMemTableBacklog
+        expr: lsm_storage_memtable_entries > 45
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High LSM MemTable Backlog on Engine: {{ $labels.engine }}"
+          description: "MemTable in engine {{ $labels.engine }} is near flush threshold for > 2m. Disk I/O or SSTable compaction may be stalling."
+
 

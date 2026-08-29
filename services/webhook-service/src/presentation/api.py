@@ -66,3 +66,29 @@ async def list_logs(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Database circuit breaker active: {str(cb_err)}. Read operations degraded."
         )
+
+@router.get("/lsm-logs/{log_key:path}")
+async def get_lsm_log(log_key: str):
+    """
+    Retrieve a delivery audit record directly from the LSM Tree Engine
+    (Checks RAM MemTable -> SSTables with embedded Bloom Filter).
+    """
+    from src.infrastructure.lsm_storage import webhook_lsm_engine
+    record = webhook_lsm_engine.get_delivery_log(log_key)
+    if not record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Log key '{log_key}' not found in LSM storage (Bloom filter / SSTable miss)."
+        )
+    return record
+
+@router.get("/lsm-stats")
+async def get_lsm_stats():
+    """Returns real-time LSM storage metrics (MemTable size, SSTables count, Bloom filter items)"""
+    from src.infrastructure.lsm_storage import webhook_lsm_engine
+    return {
+        "data_dir": webhook_lsm_engine.data_dir,
+        "memtable_entries": len(webhook_lsm_engine.lsm.memtable),
+        "sstables_count": len(webhook_lsm_engine.lsm.sstables),
+        "dedup_bloom_items": webhook_lsm_engine.dedup_bloom.count
+    }

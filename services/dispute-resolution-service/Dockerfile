@@ -16,6 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN python -c "from fastembed import TextEmbedding; TextEmbedding(model_name='BAAI/bge-small-en-v1.5')" || true
 
 COPY shared/ /app/shared/
+COPY algorithms/ /app/algorithms/
 COPY services/dispute-resolution-service/src /app/src
 
 EXPOSE 8012

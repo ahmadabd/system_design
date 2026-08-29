@@ -33,6 +33,24 @@ async def lifespan(app: FastAPI):
     
     # Start Outbox Publisher background worker
     outbox_publisher.start()
+
+    # Warm up User Bloom Filters from database
+    try:
+        from src.presentation.api import user_id_bloom_filter, user_identity_bloom_filter
+        from src.adapter.db_models import UserDB
+        from sqlalchemy.future import select
+        async with db.get_session() as session:
+            stmt = select(UserDB.id, UserDB.username, UserDB.email)
+            res = await session.execute(stmt)
+            for uid, uname, uemail in res.all():
+                user_id_bloom_filter.add(str(uid))
+                if uname:
+                    user_identity_bloom_filter.add(f"username:{uname.lower()}")
+                if uemail:
+                    user_identity_bloom_filter.add(f"email:{uemail.lower()}")
+        logger.info(f"User Bloom Filters warmed up successfully.")
+    except Exception as bf_err:
+        logger.warning(f"Failed to warm up User Bloom Filters: {bf_err}")
     
     yield
     

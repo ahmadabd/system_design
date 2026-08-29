@@ -15,6 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN python -c "from fastembed import TextEmbedding; TextEmbedding(model_name='BAAI/bge-small-en-v1.5')" || true
 
 COPY shared/ /app/shared/
+COPY algorithms/ /app/algorithms/
 COPY services/knowledge-graph-rag-service/src /app/src
 
 ENV PYTHONPATH=/app
